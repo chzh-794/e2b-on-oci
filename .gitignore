@@ -1,0 +1,38 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+terraform.tfplan
+.terraformrc
+
+# OCI
+.oci/
+oci-cli-rc
+
+# Packer
+packer_cache/
+*.box
+
+# Logs
+*.log
+/tmp/
+
+# SSH Keys
+*.pem
+*.key
+id_rsa*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+

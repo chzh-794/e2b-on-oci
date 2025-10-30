@@ -1,0 +1,189 @@
+title: E2B on OCI - Self-Hosted AI Sandbox Infrastructure
+description: Deploy E2B (Execute to Build) sandbox infrastructure on Oracle Cloud Infrastructure
+schemaVersion: 1.1.0
+version: "1.0"
+
+locale: "en"
+
+variableGroups:
+  - title: "Hidden Variables"
+    visible: false
+    variables:
+      - tenancy_ocid
+      - region
+
+  - title: "Core Configuration"
+    variables:
+      - compartment_ocid
+      - environment
+      - prefix
+
+  - title: "Bastion Configuration"
+    variables:
+      - bastion_shape
+      - bastion_ocpus
+      - bastion_memory_in_gbs
+      - ssh_public_key
+      - ssh_public_key_path
+      - allowed_ssh_cidr
+
+  - title: "Network Configuration"
+    variables:
+      - vcn_cidr_block
+      - public_subnet_cidr
+      - private_subnet_cidr
+
+  - title: "Database Configuration"
+    variables:
+      - db_name
+
+variables:
+  # Hidden variables (auto-filled by Resource Manager)
+  tenancy_ocid:
+    type: string
+    title: Tenancy ID
+    description: The Oracle Cloud Identifier (OCID) for your tenancy
+    required: true
+
+  region:
+    type: oci:identity:region:name
+    title: Region
+    description: The region in which to create all resources
+    required: true
+
+  # Core Configuration
+  compartment_ocid:
+    type: oci:identity:compartment:id
+    title: Compartment
+    description: The compartment where E2B resources will be created
+    required: true
+
+  environment:
+    type: enum
+    title: Environment
+    description: Deployment environment (affects resource protection and scaling)
+    enum:
+      - dev
+      - prod
+    default: dev
+    required: true
+
+  prefix:
+    type: string
+    title: Resource Name Prefix
+    description: Prefix for all resource names (e.g., 'e2b' creates 'e2b-vcn', 'e2b-bastion')
+    default: e2b
+    required: true
+
+  # Bastion Configuration
+  bastion_shape:
+    type: oci:core:instanceshape:name
+    title: Bastion Compute Shape
+    description: Shape for the bastion instance
+    default: VM.Standard3.Flex
+    required: true
+    dependsOn:
+      compartmentId: compartment_ocid
+
+  bastion_ocpus:
+    type: integer
+    title: Bastion OCPUs
+    description: Number of OCPUs for bastion (matches AWS c7i.xlarge)
+    default: 4
+    minimum: 1
+    maximum: 64
+    required: true
+
+  bastion_memory_in_gbs:
+    type: integer
+    title: Bastion Memory (GB)
+    description: Memory in GBs for bastion (matches AWS c7i.xlarge)
+    default: 8
+    minimum: 1
+    maximum: 1024
+    required: true
+
+  ssh_public_key:
+    type: oci:core:ssh:publickey
+    title: SSH Public Key
+    description: Paste your SSH public key here, or leave empty to auto-generate
+    required: false
+
+  ssh_public_key_path:
+    type: string
+    title: SSH Public Key Path
+    description: Path to SSH public key file (alternative to pasting)
+    required: false
+
+  allowed_ssh_cidr:
+    type: string
+    title: Allowed SSH CIDR
+    description: IP range allowed for SSH access (CIDR format)
+    default: "0.0.0.0/0"
+    required: true
+    pattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+
+  # Network Configuration
+  vcn_cidr_block:
+    type: string
+    title: VCN CIDR Block
+    description: CIDR range for the Virtual Cloud Network
+    default: "10.0.0.0/16"
+    required: true
+    pattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+
+  public_subnet_cidr:
+    type: string
+    title: Public Subnet CIDR
+    description: CIDR range for the public subnet
+    default: "10.0.1.0/24"
+    required: true
+
+  private_subnet_cidr:
+    type: string
+    title: Private Subnet CIDR
+    description: CIDR range for the private subnet (for future use)
+    default: "10.0.2.0/24"
+    required: true
+
+  # Database Configuration
+  db_name:
+    type: string
+    title: Database Name
+    description: Name for the PostgreSQL database
+    default: e2bdb
+    required: true
+
+outputGroups:
+  - title: "Connection Information"
+    outputs:
+      - bastion_public_ip
+      - ssh_command
+      - how_to_get_ssh_key
+
+  - title: "Network Information"
+    outputs:
+      - vcn_id
+      - public_subnet_id
+
+  - title: "Security Credentials"
+    outputs:
+      - ssh_private_key
+      - db_admin_password
+
+outputs:
+  bastion_public_ip:
+    type: link
+    title: Bastion Public IP
+    description: Public IP address of the bastion instance
+
+  ssh_command:
+    type: string
+    title: SSH Command
+    description: Command to SSH into bastion
+
+  vcn_id:
+    type: ocid
+    title: VCN OCID
+    description: OCID of the created VCN
+

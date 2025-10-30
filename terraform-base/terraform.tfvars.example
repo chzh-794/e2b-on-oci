@@ -1,0 +1,53 @@
+# ===================================================================================================
+# E2B on OCI - Terraform Variables Example
+# ===================================================================================================
+# Copy this file to terraform.tfvars and fill in your values
+# cp terraform.tfvars.example terraform.tfvars
+
+# ===================================================================================================
+# REQUIRED: Core OCI Configuration
+# ===================================================================================================
+
+tenancy_ocid      = "ocid1.tenancy.oc1..aaaaaaaxxxxxx"
+compartment_ocid  = "ocid1.compartment.oc1..aaaaaaaxxxxxx"
+region            = "us-ashburn-1"  # Change to YOUR region
+
+# Note: Availability Domain is auto-selected (like AWS auto-spreads across AZs)
+
+# ===================================================================================================
+# REQUIRED: SSH Key
+# ===================================================================================================
+
+# Paste your SSH public key content here
+ssh_public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ... your-email@example.com"
+
+# ===================================================================================================
+# OPTIONAL: Domain Configuration
+# ===================================================================================================
+
+base_domain = "example.com"  # Or leave as "test.local" for testing
+
+# Note: Database password is auto-generated
+# Retrieve after deployment: terraform output -raw db_admin_password
+
+# ===================================================================================================
+# OPTIONAL: Override Defaults
+# ===================================================================================================
+
+# environment = "dev"  # or "prod"
+# prefix      = "e2b"
+
+# VCN Configuration
+# vcn_cidr_block        = "10.0.0.0/16"
+# public_subnet_cidr    = "10.0.1.0/24"
+# private_subnet_cidr   = "10.0.2.0/24"
+
+# Bastion Configuration
+# bastion_shape         = "VM.Standard3.Flex"
+# bastion_ocpus         = 2
+# bastion_memory_in_gbs = 16
+# allowed_ssh_cidr      = "0.0.0.0/0"  # Restrict this in production!
+
+# Database Configuration
+# db_name = "e2bdb"
+
