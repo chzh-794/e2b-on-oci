@@ -7,12 +7,14 @@
 
 set -e
 
-# Passed from Terraform
+# Passed from Terraform via templatefile()
 ENVIRONMENT="${ENVIRONMENT}"
 PREFIX="${PREFIX}"
-
-# Auto-detect current OCI region from instance metadata
-REGION=$(curl -s http://169.254.169.254/opc/v2/instance/region || echo "unknown")
+COMPARTMENT_OCID="${COMPARTMENT_OCID}"
+REGION="${REGION}"
+SUBNET_OCID="${SUBNET_OCID}"
+AD="${AD}"
+UBUNTU_IMAGE_OCID="${UBUNTU_IMAGE_OCID}"
 
 LOG_FILE="/var/log/e2b-init.log"
 
@@ -23,6 +25,13 @@ echo "Environment: $ENVIRONMENT" | tee -a $LOG_FILE
 echo "Prefix: $PREFIX" | tee -a $LOG_FILE
 echo "Region: $REGION (auto-detected)" | tee -a $LOG_FILE
 echo "====================================================================================================" | tee -a $LOG_FILE
+
+# Wait for cloud-init's automatic apt updates to finish
+echo "Waiting for cloud-init to finish..." | tee -a $LOG_FILE
+while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+  echo "Waiting for apt lock to be released..." | tee -a $LOG_FILE
+  sleep 5
+done
 
 # Update system
 echo "Updating system packages..." | tee -a $LOG_FILE
@@ -67,11 +76,19 @@ unzip -q /tmp/terraform.zip -d /tmp >> $LOG_FILE 2>&1
 sudo mv /tmp/terraform /usr/local/bin/terraform >> $LOG_FILE 2>&1
 rm /tmp/terraform.zip
 
-# Clone E2B OCI repository
-echo "Cloning E2B on OCI repository..." | tee -a $LOG_FILE
+# Clone/Update E2B OCI repository
+echo "Cloning/Updating E2B on OCI repository..." | tee -a $LOG_FILE
 mkdir -p /opt/e2b && cd /opt/e2b
-git clone https://github.com/chzh-794/e2b-on-oci.git >> $LOG_FILE 2>&1
-cd e2b-on-oci
+if [ -d "e2b-on-oci" ]; then
+  echo "Repository exists, pulling latest changes..." | tee -a $LOG_FILE
+  cd e2b-on-oci
+  git fetch origin >> $LOG_FILE 2>&1
+  git reset --hard origin/main >> $LOG_FILE 2>&1
+else
+  echo "Cloning repository..." | tee -a $LOG_FILE
+  git clone https://github.com/chzh-794/e2b-on-oci.git >> $LOG_FILE 2>&1
+  cd e2b-on-oci
+fi
 
 # Wait for CloudFormation to complete (similar to AWS pattern)
 # In OCI, we wait for Resource Manager stack to be fully ready
@@ -84,31 +101,12 @@ echo "========================================" | tee -a $LOG_FILE
 
 cd /opt/e2b/e2b-on-oci/packer
 
-# Get values from instance metadata
-COMPARTMENT_OCID=$(curl -s http://169.254.169.254/opc/v2/instance/compartmentId)
-REGION=$(curl -s http://169.254.169.254/opc/v2/instance/region)
-SUBNET_OCID=$(curl -s http://169.254.169.254/opc/v2/vnics/0/subnetId)
-AD=$(curl -s http://169.254.169.254/opc/v2/instance/availabilityDomain)
-
-echo "Auto-detected Packer variables from instance metadata:" | tee -a $LOG_FILE
+echo "Packer variables (passed from Terraform):" | tee -a $LOG_FILE
 echo "Compartment: $COMPARTMENT_OCID" | tee -a $LOG_FILE
 echo "Region: $REGION" | tee -a $LOG_FILE
 echo "Subnet: $SUBNET_OCID" | tee -a $LOG_FILE
 echo "AD: $AD" | tee -a $LOG_FILE
-
-# Get Ubuntu 22.04 image OCID for the region
-echo "Looking up Ubuntu 22.04 image..." | tee -a $LOG_FILE
-UBUNTU_IMAGE_OCID=$(oci compute image list \
-  --compartment-id $COMPARTMENT_OCID \
-  --operating-system "Canonical Ubuntu" \
-  --operating-system-version "22.04" \
-  --sort-by TIMECREATED \
-  --sort-order DESC \
-  --limit 1 \
-  --query 'data[0].id' \
-  --raw-output)
-
-echo "Ubuntu image: $UBUNTU_IMAGE_OCID" | tee -a $LOG_FILE
+echo "Ubuntu image (x86_64): $UBUNTU_IMAGE_OCID" | tee -a $LOG_FILE
 
 # Create packer variables file automatically
 cat > packer.auto.pkrvars.hcl <<EOF
@@ -116,6 +114,8 @@ compartment_ocid    = "$COMPARTMENT_OCID"
 availability_domain = "$AD"
 subnet_ocid         = "$SUBNET_OCID"
 ubuntu_image_ocid   = "$UBUNTU_IMAGE_OCID"
+consul_version      = "1.16.2"
+nomad_version       = "1.6.2"
 EOF
 
 # Initialize Packer

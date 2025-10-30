@@ -85,7 +85,7 @@ variable "ssh_public_key" {
   type        = string
   description = <<-EOT
     SSH public key for bastion access (paste entire content of ~/.ssh/id_rsa.pub).
-    Leave empty to auto-generate a key pair (private key will be in outputs).
+    Example: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ... user@host"
   EOT
   default     = null
 }

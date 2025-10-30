@@ -106,8 +106,8 @@ variables:
   ssh_public_key:
     type: oci:core:ssh:publickey
     title: SSH Public Key
-    description: Paste your SSH public key here, or leave empty to auto-generate
-    required: false
+    description: Paste your SSH public key here (required for bastion access)
+    required: true
 
   ssh_public_key_path:
     type: string

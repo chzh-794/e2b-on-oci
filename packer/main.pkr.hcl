@@ -19,6 +19,10 @@ packer {
 # ===================================================================================================
 
 source "oracle-oci" "e2b_base" {
+  # Use instance principal authentication (bastion must be in dynamic group with IAM policy)
+  # CRITICAL: Must be string "true", not boolean, per packer-plugin-oracle examples
+  use_instance_principals = "true"
+  
   compartment_ocid    = var.compartment_ocid
   availability_domain = var.availability_domain
   subnet_ocid         = var.subnet_ocid
@@ -48,23 +52,45 @@ build {
   sources = ["source.oracle-oci.e2b_base"]
   
   # -------------------------------------------------------------------------
-  # Step 1: System Updates
+  # Step 1: Wait for cloud-init and System Updates
   # -------------------------------------------------------------------------
   provisioner "shell" {
     inline = [
+      "echo 'Waiting for cloud-init to finish...'",
+      "cloud-init status --wait || true",
+      "echo 'Waiting for apt locks to be released...'",
+      "while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do echo 'Waiting for apt lock...'; sleep 5; done",
       "sudo apt-get clean",
       "sudo apt-get update -y",
-      "sudo apt-get upgrade -y",
-      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git unzip jq net-tools qemu-utils make build-essential"
+      "sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y",
+      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git unzip jq net-tools qemu-utils || true",
+      "sudo apt-get update -y",
+      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y make build-essential || true"
     ]
   }
   
   # -------------------------------------------------------------------------
   # Step 2: Copy Setup Files
   # -------------------------------------------------------------------------
+  # Upload supervisord.conf separately for install-nomad.sh (AWS pattern)
+  provisioner "file" {
+    source      = "${path.root}/setup/supervisord.conf"
+    destination = "/tmp/supervisord.conf"
+  }
+  
   provisioner "file" {
     source      = "${path.root}/setup"
     destination = "/tmp"
+  }
+  
+  provisioner "file" {
+    source      = "${path.root}/setup/daemon.json"
+    destination = "/tmp/daemon.json"
+  }
+  
+  provisioner "file" {
+    source      = "${path.root}/setup/limits.conf"
+    destination = "/tmp/limits.conf"
   }
   
   # -------------------------------------------------------------------------
@@ -116,7 +142,7 @@ build {
   # -------------------------------------------------------------------------
   provisioner "shell" {
     script          = "${path.root}/setup/install-nomad.sh"
-    execute_command = "chmod +x {{ .Path }}; {{ .Vars }} {{ .Path }} --version ${var.nomad_version}"
+    execute_command = "chmod +x {{ .Path }}; cp /tmp/supervisord.conf $(dirname {{ .Path }})/; {{ .Vars }} {{ .Path }} --version ${var.nomad_version}"
   }
   
   # -------------------------------------------------------------------------

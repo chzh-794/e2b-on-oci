@@ -42,27 +42,6 @@ output "bastion_instance_id" {
   value       = oci_core_instance.bastion.id
 }
 
-output "ssh_command" {
-  description = "SSH command to connect to bastion"
-  value       = "ssh ubuntu@${oci_core_instance.bastion.public_ip}"
-}
-
-output "ssh_private_key" {
-  description = "Auto-generated SSH private key (save this to a file!)"
-  value       = try(tls_private_key.ssh[0].private_key_openssh, "N/A - Using provided key")
-  sensitive   = true
-}
-
-output "ssh_key_generated" {
-  description = "Whether SSH key was auto-generated (true) or user-provided (false)"
-  value       = var.ssh_public_key == null && var.ssh_public_key_path == null
-}
-
-output "how_to_get_ssh_key" {
-  description = "Instructions to retrieve auto-generated SSH key"
-  value       = var.ssh_public_key == null && var.ssh_public_key_path == null ? "Click 'Show' on ssh_private_key output in OCI Console, or run: terraform output -raw ssh_private_key" : "Using your provided SSH key"
-}
-
 # ===================================================================================================
 # DATABASE CREDENTIALS
 # ===================================================================================================
@@ -70,7 +49,9 @@ output "how_to_get_ssh_key" {
 output "db_admin_password" {
   description = "Auto-generated database admin password (save this securely!)"
   value       = local.db_admin_password
-  sensitive   = true
+  # Visible in Resource Manager outputs for easy retrieval
+  # In production, use OCI Vault to store secrets securely
+  sensitive   = false
 }
 
 output "db_name" {
@@ -78,22 +59,17 @@ output "db_name" {
   value       = var.db_name
 }
 
-output "db_connection_info" {
-  description = "How to retrieve database password after deployment"
-  value       = "Run: terraform output -raw db_admin_password"
-}
-
 # ===================================================================================================
 # IMAGE INFORMATION
 # ===================================================================================================
 
 output "ubuntu_image_id" {
-  description = "OCID of the Ubuntu 22.04 image used"
-  value       = data.oci_core_images.ubuntu_2204.images[0].id
+  description = "OCID of the x86_64 Ubuntu 22.04 image"
+  value       = local.ubuntu_image_id
 }
 
 output "ubuntu_image_name" {
-  description = "Name of the Ubuntu 22.04 image"
-  value       = data.oci_core_images.ubuntu_2204.images[0].display_name
+  description = "Name of the x86_64 Ubuntu 22.04 image (for debugging)"
+  value       = local.ubuntu_image_name
 }
 

@@ -13,17 +13,25 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.5"
     }
-    tls = {
-      source  = "hashicorp/tls"
-      version = "~> 4.0"
-    }
   }
 }
 
 provider "oci" {
   region = var.region
   # OCI Resource Manager injects auth via InstancePrincipal
-  # Only region needs to be explicitly set
+  # Default provider for compute resources in user-specified region
+}
+
+# Provider for home region (IAM resources must be created in home region)
+provider "oci" {
+  alias  = "home"
+  region = "us-phoenix-1"
+  # OCI Resource Manager injects auth via InstancePrincipal
+}
+
+# Get compartment details to retrieve compartment name for IAM policies
+data "oci_identity_compartment" "target_compartment" {
+  id = var.compartment_ocid
 }
 
 # Get list of availability domains (like AWS fetches AZs)
@@ -43,35 +51,35 @@ locals {
   ]
 }
 
-# Get Ubuntu 22.04 image for bastion
-data "oci_core_images" "ubuntu_2204" {
+# Get x86_64 Ubuntu 22.04 image (used for both bastion and Packer builds)
+data "oci_core_images" "ubuntu_2204_all" {
   compartment_id           = var.compartment_ocid
   operating_system         = "Canonical Ubuntu"
   operating_system_version = "22.04"
-  shape                    = var.bastion_shape
   sort_by                  = "TIMECREATED"
   sort_order               = "DESC"
 }
 
-# ===================================================================================================
-# SSH KEY AUTO-GENERATION (follows moirai-infra pattern)
-# ===================================================================================================
-
-# Auto-generate SSH key if not provided
-resource "tls_private_key" "ssh" {
-  count     = var.ssh_public_key == null && var.ssh_public_key_path == null ? 1 : 0
-  algorithm = "RSA"
-  rsa_bits  = 4096
+locals {
+  # Filter out aarch64 images - only use x86_64
+  x86_images = [
+    for img in data.oci_core_images.ubuntu_2204_all.images :
+    img if !strcontains(img.display_name, "aarch64")
+  ]
+  ubuntu_image_id   = local.x86_images[0].id
+  ubuntu_image_name = local.x86_images[0].display_name
 }
 
-# Determine which SSH key to use: provided > from file > auto-generated
+# ===================================================================================================
+# SSH KEY CONFIGURATION
+# ===================================================================================================
+
+# SSH key selection logic - user must provide public key
 locals {
   ssh_public_key = (
     var.ssh_public_key != null
     ? var.ssh_public_key
-    : var.ssh_public_key_path != null
-    ? file(var.ssh_public_key_path)
-    : try(tls_private_key.ssh[0].public_key_openssh, null)
+    : file(var.ssh_public_key_path)
   )
 }
 
@@ -160,6 +168,36 @@ resource "oci_core_subnet" "e2b_public_subnet" {
 }
 
 # ===================================================================================================
+# IAM: DYNAMIC GROUP AND POLICY FOR BASTION
+# ===================================================================================================
+
+# Dynamic group for bastion instance to use instance principal auth (created in home region)
+resource "oci_identity_dynamic_group" "bastion_dynamic_group" {
+  provider       = oci.home
+  compartment_id = var.tenancy_ocid
+  name           = "${var.prefix}-bastion-dynamic-group"
+  description    = "E2B bastion instance for Packer builds"
+  matching_rule  = "instance.compartment.id = '${var.compartment_ocid}'"
+}
+
+# Policy to allow bastion to manage compute resources for Packer
+# Following agent-shepherd pattern: policy created in the compartment (not at tenancy root)
+# Dynamic group is at tenancy root, but policy is in the compartment where resources are managed
+resource "oci_identity_policy" "bastion_policy" {
+  provider       = oci.home
+  compartment_id = var.compartment_ocid
+  name           = "${var.prefix}-bastion-policy"
+  description    = "Policy for E2B bastion to manage compute resources via Packer"
+  
+  statements = [
+    "Allow dynamic-group ${oci_identity_dynamic_group.bastion_dynamic_group.name} to manage instance-family in compartment ${data.oci_identity_compartment.target_compartment.name}",
+    "Allow dynamic-group ${oci_identity_dynamic_group.bastion_dynamic_group.name} to manage compute-image-capability-schema in compartment ${data.oci_identity_compartment.target_compartment.name}",
+    "Allow dynamic-group ${oci_identity_dynamic_group.bastion_dynamic_group.name} to manage volume-family in compartment ${data.oci_identity_compartment.target_compartment.name}",
+    "Allow dynamic-group ${oci_identity_dynamic_group.bastion_dynamic_group.name} to manage virtual-network-family in compartment ${data.oci_identity_compartment.target_compartment.name}",
+  ]
+}
+
+# ===================================================================================================
 # BASTION INSTANCE
 # ===================================================================================================
 
@@ -177,7 +215,7 @@ resource "oci_core_instance" "bastion" {
 
   source_details {
     source_type = "image"
-    source_id   = data.oci_core_images.ubuntu_2204.images[0].id
+    source_id   = local.ubuntu_image_id
   }
 
   create_vnic_details {
@@ -189,10 +227,16 @@ resource "oci_core_instance" "bastion" {
   metadata = {
     ssh_authorized_keys = local.ssh_public_key
     user_data           = base64encode(templatefile("${path.module}/bastion-init.sh", {
-      ENVIRONMENT = var.environment
-      PREFIX      = var.prefix
+      ENVIRONMENT        = var.environment
+      PREFIX             = var.prefix
+      COMPARTMENT_OCID   = var.compartment_ocid
+      REGION             = var.region
+      SUBNET_OCID        = oci_core_subnet.e2b_public_subnet.id
+      AD                 = local.availability_domain
+      UBUNTU_IMAGE_OCID  = local.ubuntu_image_id
     }))
   }
+  
 
   # Prevent accidental deletion in prod
   lifecycle {

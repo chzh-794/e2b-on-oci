@@ -5,7 +5,7 @@
 
 variable "compartment_ocid" {
   type        = string
-  description = "OCID of compartment (from Phase 1 Terraform output)"
+  description = "OCID of compartment"
 }
 
 variable "availability_domain" {
