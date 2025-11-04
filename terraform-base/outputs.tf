@@ -28,6 +28,26 @@ output "public_subnet_id" {
   value       = oci_core_subnet.e2b_public_subnet.id
 }
 
+output "private_subnet_id" {
+  description = "OCID of the private subnet"
+  value       = oci_core_subnet.e2b_private_subnet.id
+}
+
+output "public_lb_subnet_id" {
+  description = "OCID of the public load balancer subnet (if created)"
+  value       = var.create_load_balancer ? oci_core_subnet.e2b_public_lb_subnet[0].id : null
+}
+
+output "nat_gateway_id" {
+  description = "OCID of the NAT Gateway"
+  value       = oci_core_nat_gateway.e2b_nat_gw.id
+}
+
+output "service_gateway_id" {
+  description = "OCID of the Service Gateway"
+  value       = oci_core_service_gateway.e2b_service_gw.id
+}
+
 # ===================================================================================================
 # BASTION OUTPUTS
 # ===================================================================================================
@@ -43,14 +63,40 @@ output "bastion_instance_id" {
 }
 
 # ===================================================================================================
+# OBJECT STORAGE, POSTGRESQL, REDIS
+# ===================================================================================================
+
+output "object_storage_buckets" {
+  description = "Object storage buckets provisioned for E2B"
+  value = var.enable_object_storage ? {
+    for key, mod in module.object_storage_buckets :
+    key => {
+      id        = mod.bucket_id
+      name      = mod.bucket_name
+      namespace = mod.namespace
+    }
+  } : {}
+}
+
+output "postgresql_db_system_id" {
+  description = "OCID of the PostgreSQL DB system"
+  value       = var.enable_postgresql ? module.postgresql[0].db_system_id : null
+}
+
+output "redis_primary_fqdn" {
+  description = "Primary FQDN for the Redis cluster"
+  value       = var.enable_redis ? module.redis_cluster[0].primary_fqdn : null
+}
+
+# ===================================================================================================
 # DATABASE CREDENTIALS
 # ===================================================================================================
 
 output "db_admin_password" {
   description = "Auto-generated database admin password (save this securely!)"
-  value       = local.db_admin_password
-  # Visible in Resource Manager outputs for easy retrieval
-  # In production, use OCI Vault to store secrets securely
+  value       = var.postgresql_admin_password
+  # Visible in Resource Manager outputs for easy retrieval during POC
+  # In production, switch to OCI Vault or OCI Secrets for secure storage
   sensitive   = false
 }
 

@@ -109,7 +109,17 @@ build {
   }
   
   # -------------------------------------------------------------------------
-  # Step 4: Install OCI CLI (OCI-specific)
+  # Step 4: Install additional packages (openssh-server for security)
+  # -------------------------------------------------------------------------
+  provisioner "shell" {
+    inline = [
+      "sudo apt-get update",
+      "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-client openssh-server"
+    ]
+  }
+  
+  # -------------------------------------------------------------------------
+  # Step 5: Install OCI CLI (OCI-specific, equivalent to AWS CLI)
   # -------------------------------------------------------------------------
   provisioner "shell" {
     inline = [
@@ -119,7 +129,16 @@ build {
   }
   
   # -------------------------------------------------------------------------
-  # Step 5: Install bash-commons (needed by Nomad/Consul scripts)
+  # Step 6: Install Go (for building E2B components)
+  # -------------------------------------------------------------------------
+  provisioner "shell" {
+    inline = [
+      "sudo DEBIAN_FRONTEND=noninteractive snap install go --classic"
+    ]
+  }
+  
+  # -------------------------------------------------------------------------
+  # Step 7: Install bash-commons (needed by Nomad/Consul scripts)
   # -------------------------------------------------------------------------
   provisioner "shell" {
     inline = [
@@ -130,7 +149,18 @@ build {
   }
   
   # -------------------------------------------------------------------------
-  # Step 6: Install Consul (REUSE AWS SCRIPT!)
+  # Step 7.5: Ensure apt locks are released before installing Consul/Nomad
+  # -------------------------------------------------------------------------
+  provisioner "shell" {
+    inline = [
+      "echo 'Ensuring apt locks are released before Consul/Nomad install...'",
+      "while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do echo 'Waiting for apt lock before Consul/Nomad install...'; sleep 5; done",
+      "sudo apt-get update -y"
+    ]
+  }
+
+  # -------------------------------------------------------------------------
+  # Step 8: Install Consul (REUSE AWS SCRIPT!)
   # -------------------------------------------------------------------------
   provisioner "shell" {
     script          = "${path.root}/setup/install-consul.sh"
@@ -138,7 +168,7 @@ build {
   }
   
   # -------------------------------------------------------------------------
-  # Step 7: Install Nomad (REUSE AWS SCRIPT!)
+  # Step 9: Install Nomad (REUSE AWS SCRIPT!)
   # -------------------------------------------------------------------------
   provisioner "shell" {
     script          = "${path.root}/setup/install-nomad.sh"
@@ -146,7 +176,7 @@ build {
   }
   
   # -------------------------------------------------------------------------
-  # Step 8: Create Nomad Plugins Directory
+  # Step 10: Create Nomad Plugins Directory
   # -------------------------------------------------------------------------
   provisioner "shell" {
     inline = [
@@ -156,7 +186,7 @@ build {
   }
   
   # -------------------------------------------------------------------------
-  # Step 9: System Tuning
+  # Step 11: System Tuning
   # -------------------------------------------------------------------------
   provisioner "shell" {
     inline = [

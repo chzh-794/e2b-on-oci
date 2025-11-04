@@ -1,16 +1,27 @@
+# Project exclusions
+POC_SUMMARY.md
+
+# POC-specific files (exclude from git)
+nomad/
+db/
+examples/
+demo/
+
+# POC helper scripts (in packages/)
+packages/build-all.sh
+packages/deploy.sh
+packages/*.env.example
+
+# POC deployment scripts (all .sh files in root)
+*.sh
+
 # Terraform
-.terraform/
-.terraform.lock.hcl
 *.tfstate
 *.tfstate.*
 *.tfvars
-!terraform.tfvars.example
-terraform.tfplan
-.terraformrc
-
-# OCI
-.oci/
-oci-cli-rc
+!*.tfvars.example
+.terraform/
+.terraform.lock.hcl
 
 # Packer
 packer_cache/
@@ -18,14 +29,9 @@ packer_cache/
 
 # Logs
 *.log
-/tmp/
+logs/
 
-# SSH Keys
-*.pem
-*.key
-id_rsa*
-
-# OS
+# OS files
 .DS_Store
 Thumbs.db
 
@@ -36,3 +42,9 @@ Thumbs.db
 *.swo
 *~
 
+# Secrets
+*.pem
+*.key
+!*.key.example
+credentials.json
+secrets.yaml

@@ -27,8 +27,9 @@ ssh_public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ... your-email@example.c
 
 base_domain = "example.com"  # Or leave as "test.local" for testing
 
-# Note: Database password is auto-generated
+# Note: PostgreSQL password is hard-coded for POC convenience
 # Retrieve after deployment: terraform output -raw db_admin_password
+# postgresql_admin_password = "E2bP0cPostgres!2025"
 
 # ===================================================================================================
 # OPTIONAL: Override Defaults
@@ -50,4 +51,17 @@ base_domain = "example.com"  # Or leave as "test.local" for testing
 
 # Database Configuration
 # db_name = "e2bdb"
+
+# Managed Services
+# enable_object_storage             = true
+# enable_postgresql                 = true
+# enable_redis                      = true
+# postgresql_db_version             = "15"
+# postgresql_instance_count         = 1
+# postgresql_instance_memory_gbs    = 64
+# postgresql_instance_ocpus         = 4
+# postgresql_iops                   = 75000
+# redis_node_count                  = 3
+# redis_node_memory_gbs             = 16
+# redis_software_version            = "V7_0_5"
 

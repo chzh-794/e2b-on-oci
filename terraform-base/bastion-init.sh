@@ -15,6 +15,8 @@ REGION="${REGION}"
 SUBNET_OCID="${SUBNET_OCID}"
 AD="${AD}"
 UBUNTU_IMAGE_OCID="${UBUNTU_IMAGE_OCID}"
+ARCH="${ARCH}"
+HASH_ARCH="${HASH_ARCH}"
 
 LOG_FILE="/var/log/e2b-init.log"
 
@@ -62,16 +64,34 @@ usermod -aG docker ubuntu >> $LOG_FILE 2>&1
 echo "Installing OCI CLI..." | tee -a $LOG_FILE
 bash -c "$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)" -- --accept-all-defaults >> $LOG_FILE 2>&1
 
+# Validate architecture values passed from Terraform
+if [ -z "$ARCH" ] || [ -z "$HASH_ARCH" ]; then
+  echo "Architecture variables not provided" | tee -a $LOG_FILE
+  exit 1
+fi
+
+if [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "aarch64" ]; then
+  echo "Unsupported architecture: $ARCH" | tee -a $LOG_FILE
+  exit 1
+fi
+
+if [ "$HASH_ARCH" != "amd64" ] && [ "$HASH_ARCH" != "arm64" ]; then
+  echo "Unsupported HashiCorp architecture: $HASH_ARCH" | tee -a $LOG_FILE
+  exit 1
+fi
+
+echo "Architecture passed from Terraform: $ARCH (HashiCorp arch: $HASH_ARCH)" | tee -a $LOG_FILE
+
 # Install Packer
-echo "Installing Packer..." | tee -a $LOG_FILE
-wget -q https://releases.hashicorp.com/packer/1.10.0/packer_1.10.0_linux_amd64.zip -O /tmp/packer.zip >> $LOG_FILE 2>&1
+echo "Installing Packer for $HASH_ARCH..." | tee -a $LOG_FILE
+wget -q https://releases.hashicorp.com/packer/1.10.0/packer_1.10.0_linux_$${HASH_ARCH}.zip -O /tmp/packer.zip >> $LOG_FILE 2>&1
 unzip -q /tmp/packer.zip -d /tmp >> $LOG_FILE 2>&1
 sudo mv /tmp/packer /usr/local/bin/packer >> $LOG_FILE 2>&1
 rm /tmp/packer.zip
 
 # Install Terraform
-echo "Installing Terraform..." | tee -a $LOG_FILE
-wget -q https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip -O /tmp/terraform.zip >> $LOG_FILE 2>&1
+echo "Installing Terraform for $HASH_ARCH..." | tee -a $LOG_FILE
+wget -q https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_$${HASH_ARCH}.zip -O /tmp/terraform.zip >> $LOG_FILE 2>&1
 unzip -q /tmp/terraform.zip -d /tmp >> $LOG_FILE 2>&1
 sudo mv /tmp/terraform /usr/local/bin/terraform >> $LOG_FILE 2>&1
 rm /tmp/terraform.zip
@@ -106,7 +126,7 @@ echo "Compartment: $COMPARTMENT_OCID" | tee -a $LOG_FILE
 echo "Region: $REGION" | tee -a $LOG_FILE
 echo "Subnet: $SUBNET_OCID" | tee -a $LOG_FILE
 echo "AD: $AD" | tee -a $LOG_FILE
-echo "Ubuntu image (x86_64): $UBUNTU_IMAGE_OCID" | tee -a $LOG_FILE
+echo "Ubuntu image ($ARCH): $UBUNTU_IMAGE_OCID" | tee -a $LOG_FILE
 
 # Create packer variables file automatically
 cat > packer.auto.pkrvars.hcl <<EOF

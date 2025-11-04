@@ -6,7 +6,8 @@ variable "tenancy_ocid" {
 }
 
 variable "region" {
-  default = "ap-osaka-1"  # Default to kix, change if deploying elsewhere
+  type        = string
+  description = "The region in which to create all resources"
 }
 
 variable "compartment_ocid" {
@@ -57,6 +58,18 @@ variable "private_subnet_cidr" {
   type        = string
   description = "CIDR block for private subnet"
   default     = "10.0.2.0/24"
+}
+
+variable "public_lb_subnet_cidr" {
+  type        = string
+  description = "CIDR block for public load balancer subnet"
+  default     = "10.0.3.0/24"
+}
+
+variable "create_load_balancer" {
+  type        = bool
+  description = "Whether to create load balancer subnet (set to true when adding load balancer)"
+  default     = false
 }
 
 # ===================================================================================================
@@ -114,4 +127,80 @@ variable "db_name" {
   type        = string
   description = "Name for the database"
   default     = "e2bdb"
+}
+
+# ===================================================================================================
+# Managed Services Toggles & Settings
+# ===================================================================================================
+
+variable "enable_object_storage" {
+  type        = bool
+  description = "Whether to create OCI Object Storage buckets"
+  default     = true
+}
+
+variable "enable_postgresql" {
+  type        = bool
+  description = "Whether to create the managed PostgreSQL database"
+  default     = true
+}
+
+variable "enable_redis" {
+  type        = bool
+  description = "Whether to create the OCI Redis cluster"
+  default     = true
+}
+
+variable "postgresql_db_version" {
+  type        = string
+  description = "PostgreSQL version for the managed database"
+  default     = "15"
+}
+
+variable "postgresql_instance_count" {
+  type        = number
+  description = "Number of PostgreSQL instances"
+  default     = 1
+}
+
+variable "postgresql_instance_memory_gbs" {
+  type        = number
+  description = "Memory per PostgreSQL instance in GB"
+  default     = 64
+}
+
+variable "postgresql_instance_ocpus" {
+  type        = number
+  description = "OCPUs per PostgreSQL instance"
+  default     = 4
+}
+
+variable "postgresql_iops" {
+  type        = number
+  description = "Provisioned IOPS for PostgreSQL storage"
+  default     = 75000
+}
+
+variable "postgresql_admin_password" {
+  type        = string
+  description = "Hard-coded admin password for the PostgreSQL database (POC only; replace with OCI Vault in production)"
+  default     = "E2bP0cPostgres!2025"
+}
+
+variable "redis_node_count" {
+  type        = number
+  description = "Number of nodes for the Redis cluster"
+  default     = 3
+}
+
+variable "redis_node_memory_gbs" {
+  type        = number
+  description = "Memory per Redis node in GB"
+  default     = 16
+}
+
+variable "redis_software_version" {
+  type        = string
+  description = "Redis engine version"
+  default     = "V7_0_5"
 }

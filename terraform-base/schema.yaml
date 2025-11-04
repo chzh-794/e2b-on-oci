@@ -10,10 +10,10 @@ variableGroups:
     visible: false
     variables:
       - tenancy_ocid
-      - region
 
   - title: "Core Configuration"
     variables:
+      - region
       - compartment_ocid
       - environment
       - prefix
@@ -36,6 +36,21 @@ variableGroups:
   - title: "Database Configuration"
     variables:
       - db_name
+
+  - title: "Managed Services"
+    variables:
+      - enable_object_storage
+      - enable_postgresql
+      - enable_redis
+      - postgresql_db_version
+      - postgresql_instance_count
+      - postgresql_instance_memory_gbs
+      - postgresql_instance_ocpus
+      - postgresql_iops
+      - postgresql_admin_password
+      - redis_node_count
+      - redis_node_memory_gbs
+      - redis_software_version
 
 variables:
   # Hidden variables (auto-filled by Resource Manager)
@@ -154,6 +169,90 @@ variables:
     default: e2bdb
     required: true
 
+  enable_object_storage:
+    type: boolean
+    title: Enable Object Storage Buckets
+    description: Create Object Storage buckets for templates, kernels, and artifacts
+    default: true
+
+  enable_postgresql:
+    type: boolean
+    title: Enable Managed PostgreSQL
+    description: Provision an OCI managed PostgreSQL database for E2B services
+    default: true
+
+  enable_redis:
+    type: boolean
+    title: Enable Redis Cache
+    description: Provision an OCI Redis cluster for sandbox coordination
+    default: true
+
+  postgresql_db_version:
+    type: string
+    title: PostgreSQL Version
+    description: Engine version for the managed PostgreSQL instance
+    default: "15"
+
+  postgresql_instance_count:
+    type: integer
+    title: PostgreSQL Instance Count
+    description: Number of PostgreSQL instances to create
+    default: 1
+    minimum: 1
+    maximum: 3
+
+  postgresql_instance_memory_gbs:
+    type: integer
+    title: PostgreSQL Memory (GB)
+    description: Memory allocated per PostgreSQL instance
+    default: 64
+    minimum: 4
+    maximum: 1024
+
+  postgresql_instance_ocpus:
+    type: integer
+    title: PostgreSQL OCPUs
+    description: OCPUs allocated per PostgreSQL instance
+    default: 4
+    minimum: 1
+    maximum: 64
+
+  postgresql_iops:
+    type: integer
+    title: PostgreSQL IOPS
+    description: Provisioned IOPS for the PostgreSQL storage
+    default: 75000
+    minimum: 1000
+    maximum: 750000
+
+  postgresql_admin_password:
+    type: string
+    title: PostgreSQL Admin Password (POC)
+    description: Hard-coded PostgreSQL admin password for quick validation. Replace with OCI Vault in production.
+    default: "E2bP0cPostgres!2025"
+
+  redis_node_count:
+    type: integer
+    title: Redis Node Count
+    description: Number of nodes in the Redis cluster
+    default: 3
+    minimum: 1
+    maximum: 6
+
+  redis_node_memory_gbs:
+    type: integer
+    title: Redis Memory (GB)
+    description: Memory allocated per Redis node
+    default: 16
+    minimum: 1
+    maximum: 256
+
+  redis_software_version:
+    type: string
+    title: Redis Version
+    description: Redis engine version for the cluster
+    default: "V7_0_5"
+
 outputGroups:
   - title: "Connection Information"
     outputs:
@@ -165,6 +264,12 @@ outputGroups:
     outputs:
       - vcn_id
       - public_subnet_id
+
+  - title: "Managed Services"
+    outputs:
+      - object_storage_buckets
+      - postgresql_db_system_id
+      - redis_primary_fqdn
 
   - title: "Security Credentials"
     outputs:
@@ -186,4 +291,25 @@ outputs:
     type: ocid
     title: VCN OCID
     description: OCID of the created VCN
+
+  object_storage_buckets:
+    type: json
+    title: Object Storage Buckets
+    description: Map of object storage buckets provisioned for E2B artifacts
+
+  postgresql_db_system_id:
+    type: ocid
+    title: PostgreSQL DB System OCID
+    description: OCID of the managed PostgreSQL database system
+
+  redis_primary_fqdn:
+    type: string
+    title: Redis Primary FQDN
+    description: Primary endpoint for the Redis cluster
+
+  db_admin_password:
+    type: string
+    title: PostgreSQL Admin Password
+    description: Hard-coded PostgreSQL admin password (POC only; rotate manually after deployment)
+
 
