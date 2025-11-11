@@ -1,0 +1,69 @@
+#!/bin/bash
+
+set -euo pipefail
+
+exec > >(tee /var/log/e2b-client-user-data.log | logger -t e2b-client-user-data -s 2>/dev/console) 2>&1
+
+echo "================================================================================"
+echo "E2B Client Pool Bootstrap"
+echo "Environment: ${environment}"
+echo "Prefix: ${prefix}"
+echo "Compartment: ${compartment_id}"
+echo "Region: ${region}"
+echo "================================================================================"
+
+sudo apt-get update -y
+sudo apt-get install -y python3-pip jq gzip nfs-common
+pip3 install --upgrade oci-cli
+export PATH="$PATH:/usr/local/bin"
+
+cat <<'EOF' >/etc/profile.d/e2b-client-env.sh
+export E2B_ENVIRONMENT="${environment}"
+export E2B_PREFIX="${prefix}"
+export E2B_REGION="${region}"
+export E2B_COMPARTMENT_ID="${compartment_id}"
+export CONSUL_GOSSIP_ENCRYPTION_KEY="${consul_gossip_encryption_key}"
+EOF
+
+chmod +x /etc/profile.d/e2b-client-env.sh
+
+export OCI_CLI_AUTH=instance_principal
+
+sudo modprobe -r nbd || true
+sudo modprobe nbd max_part=16 nbds_max=128
+sudo sysctl -w kernel.unprivileged_userns_clone=1
+
+sudo mkdir -p /opt/consul/bin /opt/nomad/bin /opt/e2b/runtime /orchestrator /var/e2b/templates
+sudo chmod 0755 /opt/consul /opt/nomad /opt/e2b /opt/e2b/runtime /orchestrator
+sudo chown -R ubuntu:ubuntu /var/e2b
+
+echo "${consul_run_script_b64}" | base64 --decode | gunzip >/opt/consul/bin/run-consul.sh
+echo "${consul_client_run_script_b64}" | base64 --decode | gunzip >/opt/consul/bin/run-consul-client.sh
+echo "${nomad_run_script_b64}" | base64 --decode | gunzip >/opt/nomad/bin/run-nomad.sh
+echo "${nomad_client_run_script_b64}" | base64 --decode | gunzip >/opt/nomad/bin/run-nomad-client.sh
+
+chmod +x /opt/consul/bin/run-consul.sh /opt/consul/bin/run-consul-client.sh /opt/nomad/bin/run-nomad.sh /opt/nomad/bin/run-nomad-client.sh
+
+if command -v iptables >/dev/null 2>&1; then
+  sudo iptables -F INPUT || true
+  sudo iptables -P INPUT ACCEPT || true
+  sudo iptables -F FORWARD || true
+  sudo iptables -P FORWARD ACCEPT || true
+fi
+
+/opt/consul/bin/run-consul-client.sh \
+  --gossip-encryption-key "${consul_gossip_encryption_key}" \
+  --compartment-id "${compartment_id}" \
+  --region "${region}" \
+  --server-role "server"
+
+/opt/nomad/bin/run-nomad-client.sh \
+  --compartment-id "${compartment_id}" \
+  --region "${region}" \
+  --node-class "client" \
+  --meta "pool = \"client\"" \
+  --server-role "server" \
+  --host-volume "/var/e2b/templates" \
+  --host-volume-name "e2b-templates"
+
+echo "E2B client pool bootstrap completed."

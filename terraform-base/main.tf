@@ -280,28 +280,6 @@ resource "oci_core_security_list" "e2b_private_sl" {
     }
   }
 
-  # Nomad ports from within VCN
-  ingress_security_rules {
-    protocol    = local.tcp_protocol
-    source      = var.vcn_cidr_block
-    description = "Nomad cluster communication"
-    tcp_options {
-      min = 4646
-      max = 4648
-    }
-  }
-
-  # Consul ports from within VCN
-  ingress_security_rules {
-    protocol    = local.tcp_protocol
-    source      = var.vcn_cidr_block
-    description = "Consul cluster communication (RPC, Serf LAN, Serf WAN)"
-    tcp_options {
-      min = 8300
-      max = 8302
-    }
-  }
-
   # Consul HTTP API
   ingress_security_rules {
     protocol    = local.tcp_protocol
@@ -332,6 +310,18 @@ resource "oci_core_security_list" "e2b_private_sl" {
     icmp_options {
       type = 3
       code = 4
+    }
+  }
+
+  ingress_security_rules {
+    protocol    = local.icmp_protocol
+    source      = var.vcn_cidr_block
+    source_type = "CIDR_BLOCK"
+    description = "Allow ICMP traffic within the VCN"
+
+    icmp_options {
+      type = -1
+      code = -1
     }
   }
 

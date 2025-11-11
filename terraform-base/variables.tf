@@ -116,20 +116,6 @@ variable "allowed_ssh_cidr" {
 }
 
 # ===================================================================================================
-# Database Configuration
-# ===================================================================================================
-# Note: Database admin password is auto-generated for security
-# Retrieve from outputs after deployment
-
-# Note: Domain configuration will be added in later phases when Load Balancer is deployed
-
-variable "db_name" {
-  type        = string
-  description = "Name for the database"
-  default     = "e2bdb"
-}
-
-# ===================================================================================================
 # Managed Services Toggles & Settings
 # ===================================================================================================
 

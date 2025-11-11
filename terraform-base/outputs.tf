@@ -62,6 +62,11 @@ output "bastion_instance_id" {
   value       = oci_core_instance.bastion.id
 }
 
+output "service_dynamic_group_id" {
+  description = "OCID of the dynamic group granting OCI services permissions to instances in the compartment"
+  value       = oci_identity_dynamic_group.service_dynamic_group.id
+}
+
 # ===================================================================================================
 # OBJECT STORAGE, POSTGRESQL, REDIS
 # ===================================================================================================
@@ -98,11 +103,6 @@ output "db_admin_password" {
   # Visible in Resource Manager outputs for easy retrieval during POC
   # In production, switch to OCI Vault or OCI Secrets for secure storage
   sensitive   = false
-}
-
-output "db_name" {
-  description = "Database name"
-  value       = var.db_name
 }
 
 # ===================================================================================================

@@ -1,0 +1,359 @@
+package orchestrator
+
+import (
+	"context"
+	_ "embed"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/e2b-dev/infra/packages/api/internal/api"
+	authcache "github.com/e2b-dev/infra/packages/api/internal/cache/auth"
+	"github.com/e2b-dev/infra/packages/api/internal/cache/instance"
+	"github.com/e2b-dev/infra/packages/api/internal/sandbox"
+	"github.com/e2b-dev/infra/packages/api/internal/utils"
+	"github.com/e2b-dev/infra/packages/db/queries"
+	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
+	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
+	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
+)
+
+const (
+	maxNodeRetries       = 3
+	leastBusyNodeTimeout = 60 * time.Second
+
+	maxStartingInstancesPerNode = 3
+)
+
+var errSandboxCreateFailed = fmt.Errorf("failed to create a new sandbox, if the problem persists, contact us")
+
+func (o *Orchestrator) CreateSandbox(
+	ctx context.Context,
+	sandboxID,
+	executionID,
+	alias string,
+	team authcache.AuthTeamInfo,
+	build queries.EnvBuild,
+	metadata map[string]string,
+	envVars map[string]string,
+	startTime time.Time,
+	endTime time.Time,
+	timeout time.Duration,
+	isResume bool,
+	clientID *string,
+	baseTemplateID string,
+	autoPause bool,
+	envdAuthToken *string,
+) (*api.Sandbox, *api.APIError) {
+	childCtx, childSpan := o.tracer.Start(ctx, "create-sandbox")
+	defer childSpan.End()
+
+	// Check if team has reached max instances
+	releaseTeamSandboxReservation, err := o.instanceCache.Reserve(sandboxID, team.Team.ID, team.Tier.ConcurrentInstances)
+	if err != nil {
+		var limitErr *instance.ErrSandboxLimitExceeded
+		var alreadyErr *instance.ErrAlreadyBeingStarted
+
+		telemetry.ReportCriticalError(ctx, "failed to reserve sandbox for team", err)
+
+		switch {
+		case errors.As(err, &limitErr):
+			return nil, &api.APIError{
+				Code: http.StatusTooManyRequests,
+				ClientMsg: fmt.Sprintf(
+					"you have reached the maximum number of concurrent E2B sandboxes (%d). If you need more, "+
+						"please contact us at 'https://e2b.dev/docs/getting-help'", team.Tier.ConcurrentInstances),
+				Err: fmt.Errorf("team '%s' has reached the maximum number of instances (%d)", team.Team.ID, team.Tier.ConcurrentInstances),
+			}
+		case errors.As(err, &alreadyErr):
+			zap.L().Warn("sandbox already being started", logger.WithSandboxID(sandboxID), zap.Error(err))
+			return nil, &api.APIError{
+				Code:      http.StatusConflict,
+				ClientMsg: fmt.Sprintf("Sandbox %s is already being started", sandboxID),
+				Err:       err,
+			}
+		default:
+			zap.L().Error("failed to reserve sandbox for team", logger.WithSandboxID(sandboxID), zap.Error(err))
+			return nil, &api.APIError{
+				Code:      http.StatusInternalServerError,
+				ClientMsg: fmt.Sprintf("Failed to create sandbox: %s", err),
+				Err:       err,
+			}
+		}
+	}
+
+	telemetry.ReportEvent(childCtx, "Reserved sandbox for team")
+	defer releaseTeamSandboxReservation()
+
+	zap.L().Info("Parsing Firecracker version", zap.String("version", build.FirecrackerVersion))
+	features, err := sandbox.NewVersionInfo(build.FirecrackerVersion)
+	if err != nil {
+		zap.L().Error("Failed to parse Firecracker version", zap.String("version", build.FirecrackerVersion), zap.Error(err))
+		errMsg := fmt.Errorf("failed to get features for firecracker version '%s': %w", build.FirecrackerVersion, err)
+
+		return nil, &api.APIError{
+			Code:      http.StatusInternalServerError,
+			ClientMsg: "Failed to get build information for the template",
+			Err:       errMsg,
+		}
+	}
+
+	telemetry.ReportEvent(childCtx, "Got FC version info")
+
+	sbxRequest := &orchestrator.SandboxCreateRequest{
+		Sandbox: &orchestrator.SandboxConfig{
+			BaseTemplateId:     baseTemplateID,
+			TemplateId:         *build.EnvID,
+			Alias:              &alias,
+			TeamId:             team.Team.ID.String(),
+			BuildId:            build.ID.String(),
+			SandboxId:          sandboxID,
+			ExecutionId:        executionID,
+			KernelVersion:      build.KernelVersion,
+			FirecrackerVersion: build.FirecrackerVersion,
+			EnvdVersion:        *build.EnvdVersion,
+			Metadata:           metadata,
+			EnvVars:            envVars,
+			EnvdAccessToken:    envdAuthToken,
+			MaxSandboxLength:   team.Tier.MaxLengthHours,
+			HugePages:          features.HasHugePages(),
+			RamMb:              build.RamMb,
+			Vcpu:               build.Vcpu,
+			Snapshot:           isResume,
+			AutoPause:          &autoPause,
+		},
+		StartTime: timestamppb.New(startTime),
+		EndTime:   timestamppb.New(endTime),
+	}
+
+	var node *Node
+
+	if isResume && clientID != nil {
+		telemetry.ReportEvent(childCtx, "Placing sandbox on the node where the snapshot was taken")
+
+		node, _ = o.nodes.Get(*clientID)
+		if node != nil && node.Status() != api.NodeStatusReady {
+			node = nil
+		}
+	}
+
+	attempt := 1
+	nodesExcluded := make(map[string]*Node)
+	for {
+		select {
+		case <-childCtx.Done():
+			return nil, &api.APIError{
+				Code:      http.StatusRequestTimeout,
+				ClientMsg: "Failed to create sandbox",
+				Err:       fmt.Errorf("timeout while creating sandbox, attempt #%d", attempt),
+			}
+		default:
+			// Continue
+		}
+
+		if attempt > maxNodeRetries {
+			return nil, &api.APIError{
+				Code:      http.StatusInternalServerError,
+				ClientMsg: "Failed to create sandbox",
+				Err:       errSandboxCreateFailed,
+			}
+		}
+
+		if node == nil {
+			node, err = o.getLeastBusyNode(childCtx, nodesExcluded)
+			if err != nil {
+				telemetry.ReportError(childCtx, "failed to get least busy node", err)
+
+				return nil, &api.APIError{
+					Code:      http.StatusInternalServerError,
+					ClientMsg: "Failed to get node to place sandbox on.",
+					Err:       fmt.Errorf("failed to get least busy node: %w", err),
+				}
+			}
+		}
+
+		// To creating a lot of sandboxes at once on the same node
+		node.sbxsInProgress.Insert(sandboxID, &sbxInProgress{
+			MiBMemory: build.RamMb,
+			CPUs:      build.Vcpu,
+		})
+
+		_, err = node.Client.Sandbox.Create(childCtx, sbxRequest)
+		// The request is done, we will either add it to the cache or remove it from the node
+		if err == nil {
+			// The sandbox was created successfully
+			break
+		}
+
+		node.sbxsInProgress.Remove(sandboxID)
+
+		log.Printf("failed to create sandbox '%s' on node '%s', attempt #%d: %v", sandboxID, node.Info.ID, attempt, utils.UnwrapGRPCError(err))
+
+		// The node is not available, try again with another node
+		node.createFails.Add(1)
+	
+	// Only exclude node if there are other nodes available, or if it's a connection error
+	// Don't exclude for transient sandbox creation errors (e.g., API parameter issues)
+	totalAvailableNodes := 0
+	for _, n := range o.nodes.Items() {
+		if n != nil && n.Status() == api.NodeStatusReady && nodesExcluded[n.Info.ID] == nil {
+			totalAvailableNodes++
+		}
+	}
+	
+	// Only exclude if we have other nodes, or if it's clearly a node failure (not a sandbox config issue)
+	if totalAvailableNodes > 1 {
+		nodesExcluded[node.Info.ID] = node
+	}
+	
+		node = nil
+		attempt += 1
+	}
+
+	// The build should be cached on the node now
+	node.InsertBuild(build.ID.String())
+
+	// The sandbox was created successfully, the resources will be counted in cache
+	defer node.sbxsInProgress.Remove(sandboxID)
+
+	telemetry.SetAttributes(childCtx, attribute.String("node.id", node.Info.ID))
+	telemetry.ReportEvent(childCtx, "Created sandbox")
+
+	sbx := api.Sandbox{
+		ClientID:        node.Info.ID,
+		SandboxID:       sandboxID,
+		TemplateID:      *build.EnvID,
+		Alias:           &alias,
+		EnvdVersion:     *build.EnvdVersion,
+		EnvdAccessToken: envdAuthToken,
+	}
+
+	// This is to compensate for the time it takes to start the instance
+	// Otherwise it could cause the instance to expire before user has a chance to use it
+	startTime = time.Now()
+	endTime = startTime.Add(timeout)
+
+	instanceInfo := instance.NewInstanceInfo(
+		&sbx,
+		executionID,
+		&team.Team.ID,
+		&build.ID,
+		metadata,
+		time.Duration(team.Tier.MaxLengthHours)*time.Hour,
+		startTime,
+		endTime,
+		build.Vcpu,
+		*build.TotalDiskSizeMb,
+		build.RamMb,
+		build.KernelVersion,
+		build.FirecrackerVersion,
+		*build.EnvdVersion,
+		node.Info,
+		autoPause,
+		envdAuthToken,
+		baseTemplateID,
+	)
+
+	cacheErr := o.instanceCache.Add(childCtx, instanceInfo, true)
+	if cacheErr != nil {
+		telemetry.ReportError(ctx, "error when adding instance to cache", cacheErr)
+
+		deleted := o.DeleteInstance(childCtx, sbx.SandboxID, false)
+		if !deleted {
+			telemetry.ReportEvent(ctx, "instance wasn't found in cache when deleting")
+		}
+
+		return nil, &api.APIError{
+			Code:      http.StatusInternalServerError,
+			ClientMsg: "Failed to create sandbox",
+			Err:       fmt.Errorf("error when adding instance to cache: %w", cacheErr),
+		}
+	}
+
+	return &sbx, nil
+}
+
+// getLeastBusyNode returns the least busy node, if there are no eligible nodes, it tries until one is available or the context timeouts
+func (o *Orchestrator) getLeastBusyNode(parentCtx context.Context, nodesExcluded map[string]*Node) (leastBusyNode *Node, err error) {
+	ctx, cancel := context.WithTimeout(parentCtx, leastBusyNodeTimeout)
+	defer cancel()
+
+	childCtx, childSpan := o.tracer.Start(ctx, "get-least-busy-node")
+	defer childSpan.End()
+
+	// Try to find a node without waiting
+	leastBusyNode, err = o.findLeastBusyNode(nodesExcluded)
+	if err == nil {
+		return leastBusyNode, nil
+	}
+
+	// If no node is available, wait for a bit and try again
+	ticker := time.NewTicker(10 * time.Millisecond)
+	for {
+		select {
+		case <-childCtx.Done():
+			return nil, childCtx.Err()
+		case <-ticker.C:
+			// If no node is available, wait for a bit and try again
+			leastBusyNode, err = o.findLeastBusyNode(nodesExcluded)
+			if err == nil {
+				return leastBusyNode, nil
+			}
+		}
+	}
+}
+
+// findLeastBusyNode finds the least busy node that is ready and not in the excluded list
+// if no node is available, returns an error
+func (o *Orchestrator) findLeastBusyNode(nodesExcluded map[string]*Node) (leastBusyNode *Node, err error) {
+	totalNodes := 0
+	for _, node := range o.nodes.Items() {
+		totalNodes++
+		// The node might be nil if it was removed from the list while iterating
+		if node == nil {
+			zap.L().Info("Node is nil during selection")
+			continue
+		}
+
+		// If the node is not ready, skip it
+		if node.Status() != api.NodeStatusReady {
+			zap.L().Info("Node not ready", zap.String("node_id", node.Info.ID), zap.String("status", string(node.Status())))
+			continue
+		}
+
+		// Skip already tried nodes
+		if nodesExcluded[node.Info.ID] != nil {
+			zap.L().Info("Node in excluded list", zap.String("node_id", node.Info.ID))
+			continue
+		}
+
+		// To prevent overloading the node
+		if node.sbxsInProgress.Count() > maxStartingInstancesPerNode {
+			zap.L().Info("Node overloaded", zap.String("node_id", node.Info.ID), zap.Int("in_progress", node.sbxsInProgress.Count()))
+			continue
+		}
+
+		cpuUsage := int64(0)
+		for _, sbx := range node.sbxsInProgress.Items() {
+			cpuUsage += sbx.CPUs
+		}
+
+		if leastBusyNode == nil || (node.CPUUsage.Load()+cpuUsage) < leastBusyNode.CPUUsage.Load() {
+			leastBusyNode = node
+		}
+	}
+
+	if leastBusyNode != nil {
+		zap.L().Info("Selected least busy node", zap.String("node_id", leastBusyNode.Info.ID))
+		return leastBusyNode, nil
+	}
+
+	zap.L().Warn("No node available after checking all nodes", zap.Int("total_nodes", totalNodes), zap.Int("excluded_nodes", len(nodesExcluded)))
+	return nil, fmt.Errorf("no node available")
+}

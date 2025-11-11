@@ -50,7 +50,6 @@ base_domain = "example.com"  # Or leave as "test.local" for testing
 # allowed_ssh_cidr      = "0.0.0.0/0"  # Restrict this in production!
 
 # Database Configuration
-# db_name = "e2bdb"
 
 # Managed Services
 # enable_object_storage             = true

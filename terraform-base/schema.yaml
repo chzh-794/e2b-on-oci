@@ -33,10 +33,6 @@ variableGroups:
       - public_subnet_cidr
       - private_subnet_cidr
 
-  - title: "Database Configuration"
-    variables:
-      - db_name
-
   - title: "Managed Services"
     variables:
       - enable_object_storage
@@ -159,14 +155,6 @@ variables:
     title: Private Subnet CIDR
     description: CIDR range for the private subnet (for future use)
     default: "10.0.2.0/24"
-    required: true
-
-  # Database Configuration
-  db_name:
-    type: string
-    title: Database Name
-    description: Name for the PostgreSQL database
-    default: e2bdb
     required: true
 
   enable_object_storage:

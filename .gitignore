@@ -2,8 +2,6 @@
 POC_SUMMARY.md
 
 # POC-specific files (exclude from git)
-nomad/
-db/
 examples/
 demo/
 
