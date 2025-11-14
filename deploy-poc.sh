@@ -265,8 +265,9 @@ POSTGRES_CONNECTION_STRING=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${
 STORAGE_PROVIDER=local
 LOCAL_TEMPLATE_STORAGE_BASE_PATH=/var/e2b/templates
 
-# Redis Configuration (OCI Cache with TLS)
-REDIS_URL=${REDIS_ENDPOINT}:${REDIS_PORT}
+# Redis Configuration (optional single-node fallback)
+# Leave empty to rely on the in-memory sandbox catalog.
+REDIS_URL=
 
 # Service Configuration
 PORT=50001
@@ -300,8 +301,9 @@ ORCHESTRATOR_PORT=5008
 # Consul Configuration
 CONSUL_URL=http://localhost:8500
 
-# Redis Configuration (OCI Cache with TLS)
-REDIS_URL=${REDIS_ENDPOINT}:${REDIS_PORT}
+# Redis Configuration (optional single-node fallback)
+# Leave empty to rely on the in-memory sandbox catalog.
+REDIS_URL=
 EDGE_SECRET=${EDGE_SERVICE_SECRET}
 
 # Service Discovery
@@ -315,7 +317,7 @@ SERVICE_DISCOVERY_EDGE_DNS_QUERY=edge-api.service.consul
 # Observability
 OTEL_COLLECTOR_GRPC_ENDPOINT=localhost:4317
 LOGS_COLLECTOR_ADDRESS=http://localhost:30006
-USE_PROXY_CATALOG_RESOLUTION=true
+USE_CATALOG_RESOLUTION=true
 LOKI_URL=http://loki.service.consul:3100
 
 # Environment

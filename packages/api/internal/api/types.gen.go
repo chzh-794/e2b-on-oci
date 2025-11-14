@@ -327,6 +327,28 @@ type SandboxDetail struct {
 	TemplateID string `json:"templateID"`
 }
 
+// SandboxExecRequest defines model for SandboxExecRequest.
+type SandboxExecRequest struct {
+	Args *[]string `json:"args,omitempty"`
+
+	// Command Executable to run inside the sandbox
+	Command string             `json:"command"`
+	Cwd     *string            `json:"cwd,omitempty"`
+	Env     *map[string]string `json:"env,omitempty"`
+
+	// Input Optional stdin piped to the process
+	Input          *string `json:"input,omitempty"`
+	TimeoutSeconds *int32  `json:"timeoutSeconds,omitempty"`
+}
+
+// SandboxExecResponse defines model for SandboxExecResponse.
+type SandboxExecResponse struct {
+	ExitCode *int32  `json:"exitCode,omitempty"`
+	Status   *string `json:"status,omitempty"`
+	Stderr   *string `json:"stderr,omitempty"`
+	Stdout   *string `json:"stdout,omitempty"`
+}
+
 // SandboxLog Log entry with timestamp and line
 type SandboxLog struct {
 	// Line Log line content
@@ -604,6 +626,9 @@ type PostNodesNodeIDJSONRequestBody = NodeStatusChange
 
 // PostSandboxesJSONRequestBody defines body for PostSandboxes for application/json ContentType.
 type PostSandboxesJSONRequestBody = NewSandbox
+
+// PostSandboxesSandboxIDExecJSONRequestBody defines body for PostSandboxesSandboxIDExec for application/json ContentType.
+type PostSandboxesSandboxIDExecJSONRequestBody = SandboxExecRequest
 
 // PostSandboxesSandboxIDRefreshesJSONRequestBody defines body for PostSandboxesSandboxIDRefreshes for application/json ContentType.
 type PostSandboxesSandboxIDRefreshesJSONRequestBody PostSandboxesSandboxIDRefreshesJSONBody

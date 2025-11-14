@@ -31,6 +31,9 @@ type ServerInterface interface {
 	// Create a sandbox catalog entry
 	// (POST /v1/sandboxes/catalog)
 	V1SandboxCatalogCreate(c *gin.Context)
+	// Execute a command inside a sandbox
+	// (POST /v1/sandboxes/{sandboxID}/exec)
+	V1SandboxExec(c *gin.Context, sandboxID string)
 
 	// (GET /v1/service-discovery/nodes)
 	V1ServiceDiscoveryNodes(c *gin.Context)
@@ -137,6 +140,32 @@ func (siw *ServerInterfaceWrapper) V1SandboxCatalogCreate(c *gin.Context) {
 	}
 
 	siw.Handler.V1SandboxCatalogCreate(c)
+}
+
+// V1SandboxExec operation middleware
+func (siw *ServerInterfaceWrapper) V1SandboxExec(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "sandboxID" -------------
+	var sandboxID string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sandboxID", c.Param("sandboxID"), &sandboxID, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter sandboxID: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(ApiKeyAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.V1SandboxExec(c, sandboxID)
 }
 
 // V1ServiceDiscoveryNodes operation middleware
@@ -321,6 +350,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/v1/info", wrapper.V1Info)
 	router.DELETE(options.BaseURL+"/v1/sandboxes/catalog", wrapper.V1SandboxCatalogDelete)
 	router.POST(options.BaseURL+"/v1/sandboxes/catalog", wrapper.V1SandboxCatalogCreate)
+	router.POST(options.BaseURL+"/v1/sandboxes/:sandboxID/exec", wrapper.V1SandboxExec)
 	router.GET(options.BaseURL+"/v1/service-discovery/nodes", wrapper.V1ServiceDiscoveryNodes)
 	router.GET(options.BaseURL+"/v1/service-discovery/nodes/orchestrators", wrapper.V1ServiceDiscoveryGetOrchestrators)
 	router.POST(options.BaseURL+"/v1/service-discovery/nodes/:nodeID/drain", wrapper.V1ServiceDiscoveryNodeDrain)

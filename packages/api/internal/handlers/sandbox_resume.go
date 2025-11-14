@@ -144,7 +144,7 @@ func (a *APIStore) PostSandboxesSandboxIDResume(c *gin.Context, sandboxID api.Sa
 		envdAccessToken = &accessToken
 	}
 
-	sbx, createErr := a.startSandbox(
+	sbx, executionID, createErr := a.startSandbox(
 		ctx,
 		snap.SandboxID,
 		timeout,
@@ -166,6 +166,10 @@ func (a *APIStore) PostSandboxesSandboxIDResume(c *gin.Context, sandboxID api.Sa
 		a.sendAPIStoreError(c, createErr.Code, createErr.ClientMsg)
 
 		return
+	}
+
+	if err := a.registerSandboxInCatalog(ctx, teamInfo, sbx, executionID); err != nil {
+		zap.L().Warn("failed to register sandbox in catalog", logger.WithSandboxID(sbx.SandboxID), zap.Error(err))
 	}
 
 	c.JSON(http.StatusCreated, &sbx)

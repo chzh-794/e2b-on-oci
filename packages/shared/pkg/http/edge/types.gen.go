@@ -152,6 +152,45 @@ type SandboxDeleteCatalogRequest struct {
 	SandboxId   string `json:"sandboxId"`
 }
 
+// SandboxExecRequest defines model for SandboxExecRequest.
+type SandboxExecRequest struct {
+	// AccessToken Override access token used when contacting envd
+	AccessToken *string `json:"accessToken,omitempty"`
+
+	// Args Optional arguments passed to the command
+	Args *[]string `json:"args,omitempty"`
+
+	// Command Executable to run inside envd
+	Command string `json:"command"`
+
+	// Cwd Working directory for the process
+	Cwd *string `json:"cwd,omitempty"`
+
+	// Env Environment variables injected into the process
+	Env *map[string]string `json:"env,omitempty"`
+
+	// ExecutionId Expected sandbox execution identifier; mismatch aborts the request
+	ExecutionId *string `json:"executionId,omitempty"`
+
+	// TimeoutSeconds Optional timeout applied to the exec request
+	TimeoutSeconds *int32 `json:"timeoutSeconds,omitempty"`
+}
+
+// SandboxExecResponse defines model for SandboxExecResponse.
+type SandboxExecResponse struct {
+	// ExitCode Process exit code
+	ExitCode *int32 `json:"exitCode,omitempty"`
+
+	// Status Status text returned by envd
+	Status *string `json:"status,omitempty"`
+
+	// Stderr Captured standard error
+	Stderr *string `json:"stderr,omitempty"`
+
+	// Stdout Captured standard output
+	Stdout *string `json:"stdout,omitempty"`
+}
+
 // TemplateBuildLogsResponse defines model for TemplateBuildLogsResponse.
 type TemplateBuildLogsResponse struct {
 	// Logs Build logs
@@ -187,3 +226,6 @@ type V1SandboxCatalogDeleteJSONRequestBody = SandboxDeleteCatalogRequest
 
 // V1SandboxCatalogCreateJSONRequestBody defines body for V1SandboxCatalogCreate for application/json ContentType.
 type V1SandboxCatalogCreateJSONRequestBody = SandboxCreateCatalogRequest
+
+// V1SandboxExecJSONRequestBody defines body for V1SandboxExec for application/json ContentType.
+type V1SandboxExecJSONRequestBody = SandboxExecRequest

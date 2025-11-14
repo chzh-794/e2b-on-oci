@@ -1,12 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/launchdarkly/go-sdk-common/v3/ldcontext"
 	"go.opentelemetry.io/otel/attribute"
@@ -20,8 +23,12 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/build"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
+	"github.com/e2b-dev/infra/packages/shared/pkg/consts"
 	"github.com/e2b-dev/infra/packages/shared/pkg/env"
 	featureflags "github.com/e2b-dev/infra/packages/shared/pkg/feature-flags"
+	sharedgrpc "github.com/e2b-dev/infra/packages/shared/pkg/grpc"
+	processrpc "github.com/e2b-dev/infra/packages/shared/pkg/grpc/envd/process"
+	processconnect "github.com/e2b-dev/infra/packages/shared/pkg/grpc/envd/process/processconnect"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
@@ -378,4 +385,146 @@ func (s *server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 	}()
 
 	return &emptypb.Empty{}, nil
+}
+
+func (s *server) Exec(ctx context.Context, req *orchestrator.SandboxExecRequest) (*orchestrator.SandboxExecResponse, error) {
+	ctx, span := s.tracer.Start(ctx, "sandbox-exec")
+	defer span.End()
+
+	telemetry.SetAttributes(ctx, telemetry.WithSandboxID(req.GetSandboxId()))
+
+	if req.GetSandboxId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "sandbox_id is required")
+	}
+
+	if req.GetCommand() == "" {
+		return nil, status.Error(codes.InvalidArgument, "command is required")
+	}
+
+	sbx, ok := s.sandboxes.Get(req.GetSandboxId())
+	if !ok || sbx == nil {
+		return nil, status.Errorf(codes.NotFound, "sandbox '%s' not found", req.GetSandboxId())
+	}
+
+	if execID := req.GetExecutionId(); execID != "" && sbx.Config != nil && sbx.Config.ExecutionId != execID {
+		return nil, status.Error(codes.PermissionDenied, "execution id does not match active sandbox session")
+	}
+
+	slot := sbx.Slot
+	if slot == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "sandbox '%s' network slot unavailable", req.GetSandboxId())
+	}
+
+	baseURL := fmt.Sprintf("http://%s:%d", slot.HostIPString(), consts.DefaultEnvdServerPort)
+
+	httpClient := &http.Client{}
+
+	var cancel context.CancelFunc
+	if req.TimeoutSeconds != nil && req.GetTimeoutSeconds() > 0 {
+		timeout := time.Duration(req.GetTimeoutSeconds()) * time.Second
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	processClient := processconnect.NewProcessClient(httpClient, baseURL)
+
+	processCfg := &processrpc.ProcessConfig{
+		Cmd:  req.GetCommand(),
+		Args: req.GetArgs(),
+		Envs: req.GetEnv(),
+	}
+
+	if cwd := req.GetCwd(); cwd != "" {
+		processCfg.Cwd = &cwd
+	}
+
+	startReq := connect.NewRequest(&processrpc.StartRequest{
+		Process: processCfg,
+	})
+
+	if err := sharedgrpc.SetSandboxHeader(startReq.Header(), baseURL, req.GetSandboxId()); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to set sandbox header: %v", err)
+	}
+
+	sharedgrpc.SetUserHeader(startReq.Header(), "root")
+
+	switch {
+	case req.GetAccessToken() != "":
+		startReq.Header().Set("X-Access-Token", req.GetAccessToken())
+	case sbx.Config != nil && sbx.Config.EnvdAccessToken != nil:
+		startReq.Header().Set("X-Access-Token", *sbx.Config.EnvdAccessToken)
+	}
+
+	stream, err := processClient.Start(ctx, startReq)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to start process: %v", err)
+	}
+	defer stream.Close()
+
+	msgCh, errCh := sharedgrpc.StreamToChannel(ctx, stream)
+
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	var exitCode int32
+	statusText := ""
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, status.Errorf(codes.DeadlineExceeded, "sandbox exec cancelled: %v", ctx.Err())
+		case streamErr, ok := <-errCh:
+			if ok && streamErr != nil {
+				return nil, status.Errorf(codes.Internal, "stream error: %v", streamErr)
+			}
+			errCh = nil
+			if msgCh == nil {
+				goto DONE
+			}
+		case msg, ok := <-msgCh:
+			if !ok {
+				msgCh = nil
+				if errCh == nil {
+					goto DONE
+				}
+				continue
+			}
+
+			event := msg.GetEvent()
+			if event == nil {
+				continue
+			}
+
+			switch {
+			case event.GetData() != nil:
+				data := event.GetData()
+				if out := data.GetStdout(); len(out) > 0 {
+					stdoutBuf.Write(out)
+				}
+				if errBytes := data.GetStderr(); len(errBytes) > 0 {
+					stderrBuf.Write(errBytes)
+				}
+			case event.GetEnd() != nil:
+				end := event.GetEnd()
+				exitCode = end.GetExitCode()
+				statusText = end.GetStatus()
+				if errMsg := end.GetError(); errMsg != "" {
+					if statusText != "" {
+						statusText = fmt.Sprintf("%s: %s", statusText, errMsg)
+					} else {
+						statusText = errMsg
+					}
+				}
+			default:
+				// ignore other events (start, keepalive, etc.)
+			}
+		}
+	}
+
+DONE:
+	return &orchestrator.SandboxExecResponse{
+		Stdout:   stdoutBuf.String(),
+		Stderr:   stderrBuf.String(),
+		ExitCode: exitCode,
+		Status:   statusText,
+	}, nil
 }

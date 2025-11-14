@@ -44,6 +44,9 @@ func (a *APIStore) V1SandboxCatalogCreate(c *gin.Context) {
 		return
 	}
 
-	zap.L().Info("Sandbox successfully stored in catalog", l.WithSandboxID(body.SandboxId))
+	zap.L().Info("Sandbox successfully stored in catalog",
+		l.WithSandboxID(body.SandboxId),
+		zap.String("orchestrator_id", body.OrchestratorId),
+	)
 	c.Status(http.StatusOK)
 }

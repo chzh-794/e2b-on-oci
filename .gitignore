@@ -52,3 +52,4 @@ Thumbs.db
 !*.key.example
 credentials.json
 secrets.yaml
+ops-notes.md

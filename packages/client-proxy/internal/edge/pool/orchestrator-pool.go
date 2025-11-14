@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	sd "github.com/e2b-dev/infra/packages/proxy/internal/service-discovery"
+	"github.com/e2b-dev/infra/packages/shared/pkg/consts"
 	l "github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	"github.com/e2b-dev/infra/packages/shared/pkg/smap"
 )
@@ -18,8 +19,9 @@ import (
 type OrchestratorsPool struct {
 	discovery sd.ServiceDiscoveryAdapter
 
-	nodes *smap.Map[*OrchestratorNode]
-	mutex sync.RWMutex
+	nodes         *smap.Map[*OrchestratorNode]
+	nodesByNodeID *smap.Map[*OrchestratorNode]
+	mutex         sync.RWMutex
 
 	tracer trace.Tracer
 	logger *zap.Logger
@@ -43,8 +45,9 @@ func NewOrchestratorsPool(
 	pool := &OrchestratorsPool{
 		discovery: discovery,
 
-		nodes: smap.New[*OrchestratorNode](),
-		mutex: sync.RWMutex{},
+		nodes:         smap.New[*OrchestratorNode](),
+		nodesByNodeID: smap.New[*OrchestratorNode](),
+		mutex:         sync.RWMutex{},
 
 		tracer: tracerProvider.Tracer("orchestrators-pool"),
 		logger: logger,
@@ -71,7 +74,11 @@ func (p *OrchestratorsPool) GetOrchestrator(instanceID string) (node *Orchestrat
 	p.mutex.RLock()
 	defer p.mutex.RUnlock()
 
-	return p.nodes.Get(instanceID)
+	if node, ok := p.nodes.Get(instanceID); ok {
+		return node, true
+	}
+
+	return p.nodesByNodeID.Get(instanceID)
 }
 
 func (p *OrchestratorsPool) keepInSync(ctx context.Context) {
@@ -202,6 +209,13 @@ func (p *OrchestratorsPool) connectNode(ctx context.Context, node *sd.ServiceDis
 	defer p.mutex.Unlock()
 
 	p.nodes.Insert(o.ServiceInstanceId, o)
+	if o.NodeID != "" {
+		p.nodesByNodeID.Insert(o.NodeID, o)
+		if len(o.NodeID) > consts.NodeIDLength {
+			shortID := o.NodeID[:consts.NodeIDLength]
+			p.nodesByNodeID.Insert(shortID, o)
+		}
+	}
 	return nil
 }
 
@@ -221,6 +235,13 @@ func (p *OrchestratorsPool) removeNode(ctx context.Context, node *OrchestratorNo
 	defer p.mutex.Unlock()
 
 	p.nodes.Remove(node.ServiceInstanceId)
+	if node.NodeID != "" {
+		p.nodesByNodeID.Remove(node.NodeID)
+		if len(node.NodeID) > consts.NodeIDLength {
+			shortID := node.NodeID[:consts.NodeIDLength]
+			p.nodesByNodeID.Remove(shortID)
+		}
+	}
 	p.logger.Info("Orchestrator node node connection has been closed.", l.WithClusterNodeID(node.NodeID))
 	return nil
 }

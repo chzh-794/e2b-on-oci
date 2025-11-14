@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/e2b-dev/infra/packages/api/internal/cache/instance"
 	"github.com/e2b-dev/infra/packages/api/internal/middleware/otel/metrics"
 	"github.com/e2b-dev/infra/packages/api/internal/utils"
+	edgeapi "github.com/e2b-dev/infra/packages/shared/pkg/http/edge"
 	"github.com/e2b-dev/infra/packages/shared/pkg/id"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
@@ -148,7 +150,7 @@ func (a *APIStore) PostSandboxes(c *gin.Context) {
 		envdAccessToken = &accessToken
 	}
 
-	sbx, createErr := a.startSandbox(
+	sbx, executionID, createErr := a.startSandbox(
 		ctx,
 		sandboxID,
 		timeout,
@@ -172,7 +174,41 @@ func (a *APIStore) PostSandboxes(c *gin.Context) {
 
 	c.Set("nodeID", sbx.ClientID)
 
+	if err := a.registerSandboxInCatalog(ctx, teamInfo, sbx, executionID); err != nil {
+		zap.L().Warn("failed to register sandbox in catalog", logger.WithSandboxID(sbx.SandboxID), zap.Error(err))
+	}
+
 	c.JSON(http.StatusCreated, &sbx)
+}
+
+func (a *APIStore) registerSandboxInCatalog(ctx context.Context, teamInfo authcache.AuthTeamInfo, sbx *api.Sandbox, executionID string) error {
+	if teamInfo.Team.ClusterID == nil {
+		return fmt.Errorf("team has no cluster assigned")
+	}
+
+	cluster, ok := a.clustersPool.GetClusterById(*teamInfo.Team.ClusterID)
+	if !ok || cluster == nil {
+		return fmt.Errorf("cluster %s unavailable", teamInfo.Team.ClusterID.String())
+	}
+
+	body := edgeapi.SandboxCreateCatalogRequest{
+		ExecutionId:      executionID,
+		OrchestratorId:   sbx.ClientID,
+		SandboxId:        sbx.SandboxID,
+		SandboxMaxLength: int64(teamInfo.Tier.MaxLengthHours),
+		SandboxStartTime: time.Now().UTC(),
+	}
+
+	resp, err := cluster.GetHttpClient().V1SandboxCatalogCreateWithResponse(ctx, edgeapi.V1SandboxCatalogCreateJSONRequestBody(body))
+	if err != nil {
+		return fmt.Errorf("catalog create request failed: %w", err)
+	}
+
+	if resp.StatusCode() >= http.StatusBadRequest {
+		return fmt.Errorf("catalog create responded with %s", resp.Status())
+	}
+
+	return nil
 }
 
 func (a *APIStore) getEnvdAccessToken(envdVersion *string, sandboxID string) (string, *api.APIError) {

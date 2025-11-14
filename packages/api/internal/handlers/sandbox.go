@@ -31,7 +31,7 @@ func (a *APIStore) startSandbox(
 	baseTemplateID string,
 	autoPause bool,
 	envdAccessToken *string,
-) (*api.Sandbox, *api.APIError) {
+) (*api.Sandbox, string, *api.APIError) {
 	startTime := time.Now()
 	endTime := startTime.Add(timeout)
 
@@ -57,7 +57,7 @@ func (a *APIStore) startSandbox(
 	)
 	if instanceErr != nil {
 		telemetry.ReportCriticalError(ctx, "error when creating instance", instanceErr.Err)
-		return nil, instanceErr
+		return nil, "", instanceErr
 	}
 
 	telemetry.ReportEvent(ctx, "Created sandbox")
@@ -96,5 +96,5 @@ func (a *APIStore) startSandbox(
 		Alias:           &alias,
 		EnvdVersion:     *build.EnvdVersion,
 		EnvdAccessToken: envdAccessToken,
-	}, nil
+	}, executionID, nil
 }

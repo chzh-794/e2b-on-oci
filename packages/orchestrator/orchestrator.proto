@@ -68,6 +68,29 @@ message SandboxPauseRequest {
   string build_id = 3;
 }
 
+
+message SandboxExecRequest {
+  string sandbox_id = 1;
+  string command = 2;
+
+  repeated string args = 3;
+  map<string, string> env = 4;
+
+  optional string cwd = 5;
+  optional string execution_id = 6;
+
+  optional uint32 timeout_seconds = 7;
+  optional string access_token = 8;
+}
+
+message SandboxExecResponse {
+  string stdout = 1;
+  string stderr = 2;
+
+  sint32 exit_code = 3;
+  string status = 4;
+}
+
 message RunningSandbox {
   SandboxConfig config = 1;
   string client_id = 2;
@@ -97,4 +120,6 @@ service SandboxService {
   rpc Pause(SandboxPauseRequest) returns (google.protobuf.Empty);
 
   rpc ListCachedBuilds(google.protobuf.Empty) returns (SandboxListCachedBuildsResponse);
+
+  rpc Exec(SandboxExecRequest) returns (SandboxExecResponse);
 }

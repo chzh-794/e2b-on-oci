@@ -111,6 +111,11 @@ type ClientInterface interface {
 
 	V1SandboxCatalogCreate(ctx context.Context, body V1SandboxCatalogCreateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// V1SandboxExecWithBody request with any body
+	V1SandboxExecWithBody(ctx context.Context, sandboxID string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	V1SandboxExec(ctx context.Context, sandboxID string, body V1SandboxExecJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// V1ServiceDiscoveryNodes request
 	V1ServiceDiscoveryNodes(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -213,6 +218,30 @@ func (c *Client) V1SandboxCatalogCreateWithBody(ctx context.Context, contentType
 
 func (c *Client) V1SandboxCatalogCreate(ctx context.Context, body V1SandboxCatalogCreateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewV1SandboxCatalogCreateRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) V1SandboxExecWithBody(ctx context.Context, sandboxID string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewV1SandboxExecRequestWithBody(c.Server, sandboxID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) V1SandboxExec(ctx context.Context, sandboxID string, body V1SandboxExecJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewV1SandboxExecRequest(c.Server, sandboxID, body)
 	if err != nil {
 		return nil, err
 	}
@@ -452,6 +481,53 @@ func NewV1SandboxCatalogCreateRequestWithBody(server string, contentType string,
 	}
 
 	operationPath := fmt.Sprintf("/v1/sandboxes/catalog")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewV1SandboxExecRequest calls the generic V1SandboxExec builder with application/json body
+func NewV1SandboxExecRequest(server string, sandboxID string, body V1SandboxExecJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewV1SandboxExecRequestWithBody(server, sandboxID, "application/json", bodyReader)
+}
+
+// NewV1SandboxExecRequestWithBody generates requests for V1SandboxExec with any type of body
+func NewV1SandboxExecRequestWithBody(server string, sandboxID string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "sandboxID", runtime.ParamLocationPath, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/sandboxes/%s/exec", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -738,6 +814,11 @@ type ClientWithResponsesInterface interface {
 
 	V1SandboxCatalogCreateWithResponse(ctx context.Context, body V1SandboxCatalogCreateJSONRequestBody, reqEditors ...RequestEditorFn) (*V1SandboxCatalogCreateResponse, error)
 
+	// V1SandboxExecWithBodyWithResponse request with any body
+	V1SandboxExecWithBodyWithResponse(ctx context.Context, sandboxID string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*V1SandboxExecResponse, error)
+
+	V1SandboxExecWithResponse(ctx context.Context, sandboxID string, body V1SandboxExecJSONRequestBody, reqEditors ...RequestEditorFn) (*V1SandboxExecResponse, error)
+
 	// V1ServiceDiscoveryNodesWithResponse request
 	V1ServiceDiscoveryNodesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*V1ServiceDiscoveryNodesResponse, error)
 
@@ -883,6 +964,32 @@ func (r V1SandboxCatalogCreateResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r V1SandboxCatalogCreateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type V1SandboxExecResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *SandboxExecResponse
+	JSON400      *N400
+	JSON401      *N401
+	JSON404      *N404
+	JSON500      *N500
+}
+
+// Status returns HTTPResponse.Status
+func (r V1SandboxExecResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r V1SandboxExecResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -1080,6 +1187,23 @@ func (c *ClientWithResponses) V1SandboxCatalogCreateWithResponse(ctx context.Con
 		return nil, err
 	}
 	return ParseV1SandboxCatalogCreateResponse(rsp)
+}
+
+// V1SandboxExecWithBodyWithResponse request with arbitrary body returning *V1SandboxExecResponse
+func (c *ClientWithResponses) V1SandboxExecWithBodyWithResponse(ctx context.Context, sandboxID string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*V1SandboxExecResponse, error) {
+	rsp, err := c.V1SandboxExecWithBody(ctx, sandboxID, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseV1SandboxExecResponse(rsp)
+}
+
+func (c *ClientWithResponses) V1SandboxExecWithResponse(ctx context.Context, sandboxID string, body V1SandboxExecJSONRequestBody, reqEditors ...RequestEditorFn) (*V1SandboxExecResponse, error) {
+	rsp, err := c.V1SandboxExec(ctx, sandboxID, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseV1SandboxExecResponse(rsp)
 }
 
 // V1ServiceDiscoveryNodesWithResponse request returning *V1ServiceDiscoveryNodesResponse
@@ -1282,6 +1406,60 @@ func ParseV1SandboxCatalogCreateResponse(rsp *http.Response) (*V1SandboxCatalogC
 			return nil, err
 		}
 		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseV1SandboxExecResponse parses an HTTP response from a V1SandboxExecWithResponse call
+func ParseV1SandboxExecResponse(rsp *http.Response) (*V1SandboxExecResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &V1SandboxExecResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SandboxExecResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest N500
