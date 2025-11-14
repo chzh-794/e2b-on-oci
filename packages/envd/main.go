@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -161,18 +162,26 @@ func main() {
 	handler := api.HandlerFromMux(service, m)
 	middleware := authn.NewMiddleware(permissions.AuthenticateUsername)
 
+	addr := fmt.Sprintf("%s:%d", "0.0.0.0", port)
+
 	s := &http.Server{
 		Handler: withCORS(
 			service.WithAuthorization(
 				middleware.Wrap(handler),
 			),
 		),
-		Addr: fmt.Sprintf("0.0.0.0:%d", port),
 		// We remove the timeouts as the connection is terminated by closing of the sandbox and keepalive close.
 		ReadTimeout:  0,
 		WriteTimeout: 0,
 		IdleTimeout:  idleTimeout,
 	}
+
+	listener, err := net.Listen("tcp4", addr)
+	if err != nil {
+		log.Fatalf("error binding listener on %s: %v", addr, err)
+	}
+
+	log.Printf("envd listening on %s", listener.Addr().String())
 
 	// TODO: Not used anymore in template build, replaced by direct envd command call.
 	if startCmdFlag != "" {
@@ -194,8 +203,7 @@ func main() {
 		}
 	}
 
-	err := s.ListenAndServe()
-	if err != nil {
+	if err := s.Serve(listener); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("error starting server: %v", err)
 	}
 }

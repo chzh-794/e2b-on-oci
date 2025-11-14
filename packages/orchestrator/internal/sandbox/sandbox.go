@@ -7,8 +7,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,11 +36,16 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
 
-var defaultEnvdTimeout = utils.Must(time.ParseDuration(env.GetEnv("ENVD_TIMEOUT", "10s")))
+var defaultEnvdTimeout = utils.Must(time.ParseDuration(env.GetEnv("ENVD_TIMEOUT", "45s")))
 
 var httpClient = http.Client{
 	Timeout: 10 * time.Second,
 }
+
+const (
+	hostIfacePollInterval = 50 * time.Millisecond
+	hostIfaceReadyTimeout = 2 * time.Second
+)
 
 type Resources struct {
 	Slot     *network.Slot
@@ -93,6 +101,12 @@ func CreateSandbox(
 ) (*Sandbox, *Cleanup, error) {
 	childCtx, childSpan := tracer.Start(ctx, "new-sandbox")
 	defer childSpan.End()
+
+	zap.L().Info("create sandbox init script",
+		zap.String("path", processOptions.InitScriptPath),
+		zap.String("sandbox_id", config.SandboxId),
+		zap.String("template_id", config.TemplateId),
+	)
 
 	cleanup := NewCleanup()
 
@@ -162,7 +176,7 @@ func CreateSandbox(
 	if err != nil {
 		return nil, cleanup, fmt.Errorf("failed to get rootfs path: %w", err)
 	}
-	
+
 	ips := <-ipsCh
 	if ips.err != nil {
 		return nil, cleanup, fmt.Errorf("failed to get network slot: %w", err)
@@ -233,14 +247,16 @@ func CreateSandbox(
 		return sbx.Close(ctx, tracer)
 	})
 
-	// Wait for envd to be ready (same as ResumeSandbox)
-	err = sbx.WaitForEnvd(
-		ctx,
-		tracer,
-		defaultEnvdTimeout,
-	)
-	if err != nil {
-		return nil, cleanup, fmt.Errorf("failed to wait for envd start: %w", err)
+	if !processOptions.SkipWaitForEnvd {
+		// Wait for envd to be ready (same as ResumeSandbox)
+		err = sbx.WaitForEnvd(
+			ctx,
+			tracer,
+			defaultEnvdTimeout,
+		)
+		if err != nil {
+			return nil, cleanup, fmt.Errorf("failed to wait for envd start: %w", err)
+		}
 	}
 
 	go sbx.Checks.Start()
@@ -880,27 +896,68 @@ func (s *Sandbox) WaitForEnvd(
 	ctx, childSpan := tracer.Start(ctx, "sandbox-wait-for-start")
 	defer childSpan.End()
 
-	defer func() {
-		if e != nil {
-			return
-		}
-		// Update the sandbox as started now
-		s.Metadata.StartedAt = time.Now()
-	}()
+	sandboxID := "unknown"
+	executionID := "unknown"
+	if s.Metadata != nil {
+		sandboxID = s.Metadata.Config.SandboxId
+		executionID = s.Metadata.Config.ExecutionId
+	}
+
+	start := time.Now()
+	zap.L().Info("waiting for envd", zap.String("sandbox_id", sandboxID), zap.String("execution_id", executionID), zap.Duration("timeout", timeout))
+
 	syncCtx, syncCancel := context.WithCancelCause(ctx)
-	defer syncCancel(nil)
+	defer func() {
+		cause := context.Cause(syncCtx)
+		elapsed := time.Since(start)
+		if e != nil {
+			zap.L().Error("envd wait failed", zap.String("sandbox_id", sandboxID), zap.String("execution_id", executionID), zap.Duration("elapsed", elapsed), zap.Error(e), zap.Error(cause))
+		} else {
+			zap.L().Info("envd wait completed", zap.String("sandbox_id", sandboxID), zap.String("execution_id", executionID), zap.Duration("elapsed", elapsed), zap.Error(cause))
+			// Update the sandbox as started now
+			s.Metadata.StartedAt = time.Now()
+		}
+		syncCancel(nil)
+	}()
 
 	go func() {
 		select {
 		// Ensure the syncing takes at most timeout seconds.
 		case <-time.After(timeout):
+			zap.L().Warn("envd wait timeout", zap.String("sandbox_id", sandboxID), zap.String("execution_id", executionID), zap.Duration("timeout", timeout))
 			syncCancel(fmt.Errorf("syncing took too long"))
 		case <-syncCtx.Done():
 			return
 		case err := <-s.process.Exit:
+			zap.L().Error("envd wait fc exit", zap.String("sandbox_id", sandboxID), zap.String("execution_id", executionID), zap.Error(err))
 			syncCancel(fmt.Errorf("fc process exited prematurely: %w", err))
 		}
 	}()
+
+	if s.Resources != nil && s.Slot != nil {
+		ifaceName := s.Slot.VethName()
+		expectedIPs := resolveInterfaceIPs(s.Slot)
+		if ifaceName != "" && len(expectedIPs) > 0 {
+			ifaceCtx, ifaceCancel := context.WithTimeout(syncCtx, hostIfaceReadyTimeout)
+			ifaceErr := waitForHostInterface(ifaceCtx, ifaceName, expectedIPs)
+			ifaceCancel()
+			if ifaceErr != nil {
+				zap.L().Warn("host interface not ready before envd init",
+					zap.String("sandbox_id", sandboxID),
+					zap.String("execution_id", executionID),
+					zap.String("interface", ifaceName),
+					zap.Strings("expected_ips", ipsToStrings(expectedIPs)),
+					zap.Error(ifaceErr))
+				dumpHostNetworkState(syncCtx, ifaceName)
+			} else {
+				zap.L().Info("host interface ready",
+					zap.String("sandbox_id", sandboxID),
+					zap.String("execution_id", executionID),
+					zap.String("interface", ifaceName),
+					zap.Strings("expected_ips", ipsToStrings(expectedIPs)))
+			}
+		}
+	}
 
 	initErr := s.initEnvd(syncCtx, tracer, s.Metadata.Config.EnvVars, s.Metadata.Config.EnvdAccessToken)
 	if initErr != nil {
@@ -910,4 +967,100 @@ func (s *Sandbox) WaitForEnvd(
 	}
 
 	return nil
+}
+
+func waitForHostInterface(ctx context.Context, ifaceName string, expectedIPs []net.IP) error {
+	ticker := time.NewTicker(hostIfacePollInterval)
+	defer ticker.Stop()
+
+	for {
+		ready, err := interfaceReady(ifaceName, expectedIPs)
+		if err != nil {
+			return err
+		}
+		if ready {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("interface %s not ready: %w", ifaceName, context.Cause(ctx))
+		case <-ticker.C:
+		}
+	}
+}
+
+func interfaceReady(ifaceName string, expectedIPs []net.IP) (bool, error) {
+	iface, err := net.InterfaceByName(ifaceName)
+	if err != nil {
+		return false, nil
+	}
+
+	if iface.Flags&net.FlagUp == 0 {
+		return false, nil
+	}
+
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return false, nil
+	}
+
+	for _, addr := range addrs {
+		var ip net.IP
+		switch v := addr.(type) {
+		case *net.IPAddr:
+			ip = v.IP
+		case *net.IPNet:
+			ip = v.IP
+		}
+
+		if ip == nil {
+			continue
+		}
+
+		ip4 := ip.To4()
+		if ip4 == nil {
+			continue
+		}
+
+		for _, expected := range expectedIPs {
+			if expected == nil {
+				continue
+			}
+
+			expected4 := expected.To4()
+			if expected4 != nil && ip4.Equal(expected4) {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+func dumpHostNetworkState(ctx context.Context, ifaceName string) {
+	commands := [][]string{
+		{"ip", "addr", "show", ifaceName},
+		{"ip", "route", "show", "table", "main"},
+		{"iptables", "-S", "FORWARD"},
+	}
+
+	for _, cmdArgs := range commands {
+		name := cmdArgs[0]
+		args := cmdArgs[1:]
+		cmd := exec.CommandContext(ctx, name, args...)
+		output, err := cmd.CombinedOutput()
+		trimmed := strings.TrimSpace(string(output))
+		if err != nil {
+			zap.L().Warn("network diagnostic command failed",
+				zap.String("command", strings.Join(cmdArgs, " ")),
+				zap.Error(err),
+				zap.String("output", trimmed))
+			continue
+		}
+
+		zap.L().Info("network diagnostic output",
+			zap.String("command", strings.Join(cmdArgs, " ")),
+			zap.String("output", trimmed))
+	}
 }

@@ -175,7 +175,7 @@ func (s *Slot) CreateNetwork() error {
 		return fmt.Errorf("error creating postrouting rule to vpeer: %w", err)
 	}
 
-	err = tables.Append("nat", "PREROUTING", "-i", s.VpeerName(), "-d", s.HostIPString(), "-j", "DNAT", "--to-destination", s.NamespaceIP())
+	err = tables.Append("nat", "PREROUTING", "-d", s.HostIPString(), "-j", "DNAT", "--to-destination", s.NamespaceIP())
 	if err != nil {
 		return fmt.Errorf("error creating postrouting rule from vpeer: %w", err)
 	}
@@ -247,6 +247,19 @@ func (s *Slot) RemoveNetwork() error {
 		err = tables.Delete("nat", "POSTROUTING", "-s", s.HostCIDR(), "-o", defaultGateway, "-j", "MASQUERADE")
 		if err != nil {
 			errs = append(errs, fmt.Errorf("error deleting host postrouting rule: %w", err))
+		}
+
+		// Delete veth output DNAT rule
+		err = tables.Delete("nat", "OUTPUT", "-d", s.VethIP().String(), "-j", "DNAT", "--to-destination", s.NamespaceIP())
+		if err != nil {
+			errs = append(errs, fmt.Errorf("error deleting veth output dnat rule: %w", err))
+		}
+
+		if vethPeer := s.VethIP(); vethPeer != nil {
+			err = tables.Delete("nat", "OUTPUT", "-d", vethPeer.String(), "-j", "DNAT", "--to-destination", s.NamespaceIP())
+			if err != nil {
+				errs = append(errs, fmt.Errorf("error deleting veth peer output dnat rule: %w", err))
+			}
 		}
 	}
 

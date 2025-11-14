@@ -45,6 +45,7 @@ job "template-manager" {
         LOCAL_TEMPLATE_STORAGE_BASE_PATH = "/var/e2b/templates"
         TEMPLATE_BUCKET_NAME             = "local"
         ARTIFACTS_REGISTRY_PROVIDER      = "Local"
+        SANDBOX_DEBUG_VM_LOGS            = "true"
       }
 
       config {

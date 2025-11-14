@@ -48,6 +48,9 @@ type ProcessOptions struct {
 	Stdout io.Writer
 	// Stderr is the writer to which the process stderr will be written.
 	Stderr io.Writer
+
+	// SkipWaitForEnvd, when true, skips waiting for envd readiness during sandbox creation.
+	SkipWaitForEnvd bool
 }
 
 type Process struct {
@@ -274,7 +277,7 @@ func (p *Process) Create(
 		"init": options.InitScriptPath,
 
 		// Specify root device (required for kernel to mount rootfs)
-		"root":        "/dev/vda",
+		"root":       "/dev/vda",
 		"rootfstype": "ext4",
 
 		// Networking IPv4 and IPv6

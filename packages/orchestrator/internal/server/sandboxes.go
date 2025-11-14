@@ -20,6 +20,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/build"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
+	"github.com/e2b-dev/infra/packages/shared/pkg/env"
 	featureflags "github.com/e2b-dev/infra/packages/shared/pkg/feature-flags"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
@@ -65,19 +66,19 @@ func (s *server) Create(ctxConn context.Context, req *orchestrator.SandboxCreate
 	// OCI POC: Use snapshot-based boot if Snapshot flag is true, otherwise fresh boot
 	if req.Sandbox.Snapshot {
 		sbx, cleanup, err = sandbox.ResumeSandbox(
-		childCtx,
-		s.tracer,
-		s.networkPool,
-		s.templateCache,
-		req.Sandbox,
-		childSpan.SpanContext().TraceID().String(),
-		req.StartTime.AsTime(),
-		req.EndTime.AsTime(),
-		req.Sandbox.BaseTemplateId,
-		s.devicePool,
-		config.AllowSandboxInternet,
-		metricsWriteFlag,
-	)
+			childCtx,
+			s.tracer,
+			s.networkPool,
+			s.templateCache,
+			req.Sandbox,
+			childSpan.SpanContext().TraceID().String(),
+			req.StartTime.AsTime(),
+			req.EndTime.AsTime(),
+			req.Sandbox.BaseTemplateId,
+			s.devicePool,
+			config.AllowSandboxInternet,
+			metricsWriteFlag,
+		)
 	} else {
 		// Fresh boot without snapshot (for POC without snapshot files)
 		t, getTemplateErr := s.templateCache.GetTemplate(
@@ -91,12 +92,14 @@ func (s *server) Create(ctxConn context.Context, req *orchestrator.SandboxCreate
 		}
 
 		// Use empty/default values for fresh boot
-	processOptions := fc.ProcessOptions{
-		InitScriptPath: "/sbin/init", // Fixed: was pointing to .conf file
-		KernelLogs:     false, // Disabled to prevent console=ttyS0 and getty hang
-		Stdout:         os.Stdout,
-		Stderr:         os.Stderr,
-	}
+		debugVMLogs := env.GetEnv("SANDBOX_DEBUG_VM_LOGS", "false") == "true"
+		processOptions := fc.ProcessOptions{
+			InitScriptPath:      "/sbin/init", // Fixed: was pointing to .conf file
+			KernelLogs:          debugVMLogs,
+			SystemdToKernelLogs: debugVMLogs,
+			Stdout:              os.Stdout,
+			Stderr:              os.Stderr,
+		}
 
 		sbx, cleanup, err = sandbox.CreateSandbox(
 			childCtx,

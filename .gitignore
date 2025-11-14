@@ -10,8 +10,14 @@ packages/build-all.sh
 packages/deploy.sh
 packages/*.env.example
 
+# Generated bundles
+e2b-oci-*.zip
+
 # POC deployment scripts (all .sh files in root)
 *.sh
+!deploy-poc.sh
+!seed-template-image.sh
+!deploy-services.sh
 
 # Terraform
 *.tfstate

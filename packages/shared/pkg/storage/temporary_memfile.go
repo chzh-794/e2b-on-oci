@@ -43,8 +43,26 @@ func AcquireTmpMemfile(
 		snapshotCacheQueue.Release(1)
 	})
 
+	if err := os.MkdirAll(snapshotCacheDir, 0o755); err != nil {
+		releaseOnce()
+		return nil, fmt.Errorf("failed to prepare snapshot cache dir: %w", err)
+	}
+
+	path := cacheMemfileFullSnapshotPath(buildID, randomID.String())
+
+	tmpFile, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		releaseOnce()
+		return nil, fmt.Errorf("failed to create snapshot memfile %s: %w", path, err)
+	}
+	if closeErr := tmpFile.Close(); closeErr != nil {
+		releaseOnce()
+		_ = os.Remove(path)
+		return nil, fmt.Errorf("failed to close snapshot memfile %s: %w", path, closeErr)
+	}
+
 	return &TemporaryMemfile{
-		path:    cacheMemfileFullSnapshotPath(buildID, randomID.String()),
+		path:    path,
 		closeFn: releaseOnce,
 	}, nil
 }

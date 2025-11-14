@@ -81,8 +81,9 @@ func (p *Pool) createNetworkSlot() (*Slot, error) {
 
 	err = ips.CreateNetwork()
 	if err != nil {
+		cleanupErr := cleanupDanglingNamespace(ips)
 		releaseErr := p.slotStorage.Release(ips)
-		err = errors.Join(err, releaseErr)
+		err = errors.Join(err, cleanupErr, releaseErr)
 
 		return nil, fmt.Errorf("failed to create network: %w", err)
 	}

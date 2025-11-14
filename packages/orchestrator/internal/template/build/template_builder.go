@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -158,12 +159,19 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 
 	// Provision sandbox with systemd and other vital parts
 	postProcessor.WriteMsg("Provisioning sandbox template")
+	postProcessor.WriteMsg(fmt.Sprintf("Using init script %s for provisioning", busyBoxInitPath))
+	zap.L().Info("provisioning init script", zap.String("path", busyBoxInitPath))
 	// Just a symlink to the rootfs build file, so when the COW cache deletes the underlying file (here symlink),
 	// it will not delete the rootfs file. We use the rootfs again later on to start the sandbox template.
 	rootfsProvisionPath := filepath.Join(templateBuildDir, rootfsProvisionLink)
 	err = os.Symlink(rootfsPath, rootfsProvisionPath)
 	if err != nil {
 		return nil, fmt.Errorf("error creating provision rootfs: %w", err)
+	}
+
+	postProcessor.WriteMsg("Seeding apt package indexes")
+	if err := b.preseedAptCaches(ctx, postProcessor, rootfsPath); err != nil {
+		return nil, fmt.Errorf("error pre-seeding apt caches: %w", err)
 	}
 
 	err = b.provisionSandbox(ctx, postProcessor, template, envdVersion, localTemplate, rootfsProvisionPath)
@@ -196,6 +204,8 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 
 	// Create sandbox for building template
 	postProcessor.WriteMsg("Creating sandbox template")
+	postProcessor.WriteMsg(fmt.Sprintf("Using init script %s for template sandbox", systemdInitPath))
+	zap.L().Info("template sandbox init script", zap.String("path", systemdInitPath))
 	sbx, cleanup, err := sandbox.CreateSandbox(
 		ctx,
 		b.tracer,
@@ -423,6 +433,63 @@ func (b *TemplateBuilder) uploadTemplate(
 	return errCh
 }
 
+func (b *TemplateBuilder) preseedAptCaches(ctx context.Context, postProcessor *writer.PostProcessor, rootfsPath string) error {
+	mountDir, err := os.MkdirTemp("", "apt-preseed-")
+	if err != nil {
+		return fmt.Errorf("error creating temporary mount point: %w", err)
+	}
+	defer func() {
+		if removeErr := os.RemoveAll(mountDir); removeErr != nil {
+			zap.L().Error("error removing temporary mount point", zap.Error(removeErr))
+		}
+	}()
+
+	if err := ext4.Mount(ctx, b.tracer, rootfsPath, mountDir); err != nil {
+		return fmt.Errorf("error mounting rootfs for apt preseed: %w", err)
+	}
+	defer func() {
+		if unmountErr := ext4.Unmount(ctx, b.tracer, mountDir); unmountErr != nil {
+			zap.L().Error("error unmounting rootfs after apt preseed", zap.Error(unmountErr))
+		}
+	}()
+
+	bindTargets := []string{filepath.Join(mountDir, "dev"), filepath.Join(mountDir, "proc"), filepath.Join(mountDir, "sys")}
+	sources := []string{"/dev", "/proc", "/sys"}
+	for idx, target := range bindTargets {
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return fmt.Errorf("error preparing %s: %w", target, err)
+		}
+		src := sources[idx]
+		cmd := exec.CommandContext(ctx, "mount", "--bind", src, target)
+		if output, bindErr := cmd.CombinedOutput(); bindErr != nil {
+			return fmt.Errorf("error bind mounting %s to %s: %w (output: %s)", src, target, bindErr, strings.TrimSpace(string(output)))
+		}
+	}
+	defer func() {
+		for i := len(bindTargets) - 1; i >= 0; i-- {
+			target := bindTargets[i]
+			cmd := exec.CommandContext(context.Background(), "umount", target)
+			if output, umountErr := cmd.CombinedOutput(); umountErr != nil {
+				zap.L().Error("error unmounting bind", zap.Error(umountErr), zap.String("target", target), zap.String("output", strings.TrimSpace(string(output))))
+			}
+		}
+	}()
+
+	cmd := exec.CommandContext(ctx, "chroot", mountDir, "/usr/bin/env", "DEBIAN_FRONTEND=noninteractive", "APT_LISTCHANGES_FRONTEND=none", "apt-get", "update")
+	output, err := cmd.CombinedOutput()
+	trimmedOutput := strings.TrimSpace(string(output))
+	if trimmedOutput != "" {
+		for _, line := range strings.Split(trimmedOutput, "\n") {
+			postProcessor.WriteMsg(fmt.Sprintf("[apt-preseed] %s", strings.TrimSpace(line)))
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("apt-get update failed: %w", err)
+	}
+
+	return nil
+}
+
 func (b *TemplateBuilder) provisionSandbox(
 	ctx context.Context,
 	postProcessor *writer.PostProcessor,
@@ -447,7 +514,8 @@ func (b *TemplateBuilder) provisionSandbox(
 		provisionTimeout,
 		rootfsPath,
 		fc.ProcessOptions{
-			InitScriptPath: busyBoxInitPath,
+			InitScriptPath:  busyBoxInitPath,
+			SkipWaitForEnvd: true,
 			// Always show kernel logs during the provisioning phase,
 			// the sandbox is then started with systemd and without kernel logs.
 			KernelLogs: true,
