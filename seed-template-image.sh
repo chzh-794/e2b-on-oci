@@ -103,7 +103,7 @@ if [[ ! -d "${DOCKER_CONTEXT}" ]]; then
   exit 1
 fi
 
-SSH_BASE_OPTS=(-i "${SSH_KEY}" -o StrictHostKeyChecking=no)
+SSH_BASE_OPTS=(-i "${SSH_KEY}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no)
 if [[ -n "${BASTION_HOST}" ]]; then
   SSH_BASE_OPTS+=(-o "ProxyJump=${SSH_USER}@${BASTION_HOST}")
 fi

@@ -2,10 +2,35 @@
 
 This runbook documents the standard procedure for deploying the E2B API and supporting services on Oracle Cloud Infrastructure (OCI). Follow the steps below in sequence to provision infrastructure, stage runtime assets, and validate the platform.
 
+## Repository Overview
+
+```
+e2b-on-oci/
+├── terraform-base/        # Networking, bastion, IAM policies, object storage buckets, managed PostgreSQL/Redis (Stack 1)
+├── terraform-cluster/     # Nomad/Consul/API/client pools (Stack 2)
+├── packages/              # Source code for API, orchestrator, client-proxy, template-manager, envd, shared libs
+├── artifacts/bin/         # Prebuilt Linux AMD64 binaries uploaded by deploy-poc.sh
+├── nomad/                 # Nomad job definitions (api.hcl, orchestrator.hcl, client-proxy.hcl, template-manager.hcl)
+├── deploy-poc.sh          # Provisioning script that pushes binaries/configs and installs dependencies
+├── deploy-services.sh     # Registers Nomad jobs after deploy-poc.sh finishes
+├── db/                    # init-db.sh + SQL seeds/migrations for the managed PostgreSQL instance
+├── examples/              # Demo scripts for exercising the API/sandbox lifecycle
+├── deploy.env.example     # Template for the local deployment config (copy to deploy.env, ignored by git)
+└── README.md              # This runbook
+```
+
+- **terraform-base** and **terraform-cluster** remain separate stacks so you can iterate on cluster resources without recreating networking/DB resources. Zip each folder to produce `e2b-oci-stack.zip` (base) and `e2b-oci-cluster.zip` (cluster).
+- **packages/** mirrors the AWS repo; build binaries with `GOOS=linux GOARCH=amd64` and drop them into `artifacts/bin/` so `deploy-poc.sh` can upload them.
+- **deploy-poc.sh** reads `deploy.env`, connects through the bastion, installs dependencies, uploads env files/binaries, and downloads Firecracker assets.
+- **terraform-cluster** user-data now enables the `e2b-cleanup-network.timer` on the client pool, which runs every minute to delete idle `ns-*` namespaces and detach orphaned `nbd` devices so template builds never exhaust the slot pool.
+- **deploy-services.sh** copies the Nomad job files and runs `nomad job run` for orchestrator, API, client-proxy, and template-manager.
+- **db/init-db.sh** seeds the managed PostgreSQL instance (schema + API keys). Run it before API validation.
+- **deploy.env.example** documents every value the scripts need (bastion IP, pool IPs, PostgreSQL host, artifacts path). Copy it to `deploy.env` (ignored by git) and fill it in using the OCI Console outputs.
+
 ## Quickstart Overview
 
 1. **Package Terraform** – upload the base and cluster stacks to OCI Resource Manager.
-2. **Apply Terraform** – create networking, bastion, and the Nomad/Consul pools.
+2. **Apply Terraform** – provision OCI networking, IAM policies, managed services, and bring up the Nomad/Consul server/API/client pools.
 3. **Stage Runtime Artifacts** – copy the prebuilt binaries, kernels, and configuration to the instances.
 4. **Register Nomad Jobs** – launch the orchestrator, API, client-proxy, and template-manager.
 5. **Initialize PostgreSQL** – load schema and seeds required for the API to authorize requests.
@@ -63,12 +88,30 @@ These are the archives you will upload into OCI Resource Manager.
 ## 2. Apply Terraform (Base & Cluster)
 
 1. In OCI Resource Manager, create a Stack from `e2b-oci-stack.zip` and run `Apply` using the desired compartment, region, CIDRs, SSH key, etc.
-2. After the base stack completes, repeat the process with `e2b-oci-cluster.zip`.
-3. Record the outputs you need for SSH (bastion public IP, server pool private IPs, etc.).
+2. After the base stack completes, repeat the process with `e2b-oci-cluster.zip`. Capture the following before starting the cluster stack:
+   - `private_subnet_id`, `vcn_id`, and `vcn_cidr_block` (from the base stack outputs)
+   - `custom_image_ocid`: open OCI Console → **Compute → Custom Images** under the same compartment and copy the latest `e2b-*` image OCID (each build is timestamped). You can also SSH to the bastion and run `cat /opt/e2b/custom_image_ocid.txt`.
+   - SSH public key you want injected into the cluster instances
+   - Any tag/compartment overrides you plan to reuse
+3. Collect the IPs you need for SSH (bastion public IP, server/API/client pool private IPs, etc.) from the OCI Console → Compute → Instances in the target compartment, then copy them into `deploy.env`.
 
 ## 3. Stage Artifacts & Runtime Assets
 
 All steps below run from your workstation inside `e2b-on-oci/`.
+
+**Prepare `deploy.env` first**
+
+1. Copy the template and edit it locally (the file is ignored by git):
+   ```bash
+   cp deploy.env.example deploy.env
+   ```
+2. Fill in the values:
+   - `SSH_USER` remains `ubuntu` for the OCI images we ship (override only if you customized the image).
+   - `BASTION_HOST`, `SERVER_POOL_*`, `API_POOL_*`, `CLIENT_POOL_*`: open the OCI Console → **Compute → Instances**, select the compartment you targeted with Terraform, and copy each instance’s public/private IP from the table.
+   - `POSTGRES_HOST`: OCI Console → **Oracle Database → PostgreSQL**, select the DB system created by `terraform-base`, and copy its hostname (format `primary.<hash>.postgresql.<region>.oci.oraclecloud.com`).
+   - `ARTIFACTS_DIR` can stay at `artifacts/bin` unless you moved the prebuilt binaries elsewhere.
+   - Redis settings are optional—the client-proxy uses an in-memory catalog in this POC, so you can leave `REDIS_ENDPOINT` unset unless you explicitly point at the managed Redis cluster.
+3. `deploy-poc.sh` and `deploy-services.sh` automatically source `deploy.env`, so once the file is filled out you can run the scripts without additional prompts.
 
 1. Ensure you can reach the bastion via SSH:
    ```bash
@@ -76,11 +119,26 @@ All steps below run from your workstation inside `e2b-on-oci/`.
    ```
    From there you can jump to the private nodes using the IPs provided by Terraform.
 
-2. Execute the provisioning script which uploads binaries, env files, fetches Firecracker assets, and configures directories on the API/client pools:
+2. Execute the provisioning script which **syncs this repo to the API/client pools**, uploads binaries, fetches Firecracker assets, and configures directories on both hosts:
    ```bash
    ./deploy-poc.sh
    ```
-   The script prompts for the bastion IP and uses the binaries you staged under `artifacts/bin/`. It also downloads the Firecracker release specified in `deploy-poc.sh` so no manual kernel copy is required.
+   - `deploy-poc.sh` now rsyncs the workstation repository (excluding `.git`, zip archives, and `artifacts/bin/`) into `~/e2b` on both the API and client pools before migrations run. All database migrations therefore execute from the freshly synced `packages/db/` directory—no manual `scp` is required.
+   - The script prompts for the bastion IP and uses the binaries you staged under `artifacts/bin/`. It also downloads the Firecracker release specified in `deploy-poc.sh` so no manual kernel copy is required.
+
+### Quick cluster sanity check (re-run after services)
+
+After `deploy-poc.sh` completes (and before pushing Nomad jobs), run the validation helper. It reuses `deploy.env` to SSH via the bastion, checks Nomad/Consul membership, verifies Docker/Firecracker assets on the client pool, curls the API & client-proxy `/health` endpoints, and confirms the API node can reach PostgreSQL.
+
+```bash
+./scripts/check-cluster.sh
+```
+
+> The script emits warnings if SSH host keys changed—clear stale entries with `ssh-keygen -R <private-ip>` as needed. It also requires `jq` on your workstation for the Consul catalog summary.
+>
+> When you run it **before** `deploy-services.sh`, the API/client-proxy processes are not yet running, so the curls will print the friendly fallback messages (`API not started yet`, `Client proxy not started yet`) instead of failing the script.
+
+> The script is idempotent—run it immediately after `deploy-services.sh` as well to make sure the Nomad jobs stayed healthy. Because it already curls `http://127.0.0.1:50001/health` and `http://127.0.0.1:3001/health` on the API host, you get API/client-proxy validation for free. The client-proxy `/health` endpoint will report `unhealthy` (and you will see `dial tcp 127.0.0.1:4317: connect: connection refused` in the logs) as long as OTEL/Loki are disabled; this is expected until we deploy those collectors or clear the env vars that point to them.
 
 By default the script writes `client-proxy.env` with `REDIS_URL=` (empty) and `USE_CATALOG_RESOLUTION=true`, which lets the sandbox catalog run entirely in-memory on a single client-proxy node. If you later wire up a TLS-enabled Redis cache, populate `REDIS_URL` before re-running the script so that catalog entries persist across restarts.
 
@@ -90,45 +148,48 @@ After `deploy-poc.sh` finishes, push the service jobs into the Nomad cluster:
 
 ```bash
 ./deploy-services.sh
+./scripts/check-cluster.sh   # verify Nomad, Consul, and health endpoints
 ```
 
 This script copies the job specifications to the server pool, runs `nomad job run` for orchestrator, api, client-proxy, and template-manager, and then runs a basic `nomad status` check.
 
-## 5. Initialize the Database (Required for API Tests)
+## 5. Initialize the Database (rerun only if needed)
 
-If you need the PostgreSQL schema and seed data in place (for API validation or template pipeline tests), run the helper script provided under `db/`:
+`deploy-poc.sh` already runs the database migrations/seed step during **Phase 1c**, so on a fresh deployment you can move on to the next section. Keep this helper handy in case you tear down the DB, change credentials, or need to reapply the schema manually:
 
 ```bash
-./db/init-db.sh
+./scripts/run-init-db.sh
 ```
 
-The script connects to the managed PostgreSQL instance provisioned by Terraform, applies `migration.sql`, and loads `seed-db.sql`. Update connection parameters inside the script if your database endpoint or credentials differ from the defaults in `terraform-base`.
+This uses the values from `deploy.env`, runs `/opt/e2b/db/init-db.sh` on the API pool (which can reach the private PostgreSQL endpoint), and applies the schema plus seed data. Update `deploy.env` if your database endpoint or credentials differ from the defaults in `terraform-base`.
 
 ### API credentials
 
-The seed creates an administrative API token (`sk_e2b_*`). Once the script completes, note the value and export it locally:
+The seed creates both the **team API key** (`e2b_…`) and the **admin API token** (`sk_e2b_…`). Fetch them directly from PostgreSQL (run the commands below from your workstation; they jump through the bastion to the API node and use the values already present in `deploy.env`):
+
+Run the helper script to pull them out of PostgreSQL (it reuses `deploy.env` for all connection settings and stores the result in `api-creds.env`, which is git-ignored):
 
 ```bash
-export E2B_API_KEY="sk_e2b_..."
-```
-
-You will use this token for all authenticated API requests.
-
-The seed also provisions a **team API key** in the `team_api_keys` table (it always starts with `e2b_`). Capture it immediately—`X-API-Key` must use this value while the `Authorization` header carries the `sk_e2b_*` token:
-
-```bash
-ssh -J ubuntu@<bastion-ip> ubuntu@<api-pool-ip> \
-  "PGPASSWORD=<postgres-pass> psql -h <db-host> -U <db-user> -d postgres -At -c 'SELECT api_key FROM team_api_keys LIMIT 1;'"
+./scripts/export-api-creds.sh
+set -a; source api-creds.env; set +a
 ```
 
 All authenticated requests therefore include **both** headers:
 
-- `X-API-Key: e2b_...` (team-scoped key)
-- `Authorization: Bearer sk_e2b_...` (admin token)
+- `X-API-Key: ${TEAM_API_KEY}` (team-scoped key)
+- `Authorization: Bearer ${ADMIN_API_TOKEN}` (admin token)
 
 This mirrors the production posture and keeps the client-proxy catalog APIs unlocked.
 
 ## 6. Run & Validate the API
+
+> **Automation first:** Once `deploy.env`, `api-creds.env`, and at least one template exist, you can run the helper below to perform the entire validation flow (health checks → sandbox CRUD → hello-world exec → cleanup) automatically via the bastion. Set `VALIDATION_TEMPLATE_ID=<template-id>` (and optionally `VALIDATION_TEMPLATE_ALIAS`) in `deploy.env` if you want to pin a specific template.
+>
+> ```bash
+> ./scripts/validate-api.sh
+> ```
+>
+> The script consumes a pre-built template—the same artifacts the template-manager leaves under `/var/e2b/templates/<template-id>/...` on the client pool. If you need to rebuild a template, follow the manual instructions below (curl commands + `seed-template-image.sh`), then rerun the helper to exercise sandbox CRUD/exec.
 
 With Nomad jobs running and the database initialized, the API is immediately reachable from the private subnet and via the bastion.
 
@@ -214,6 +275,8 @@ With the template cached and the catalog populated, run a full sandbox round-tri
    ```
 
 These steps prove CRUD + execution parity with the AWS flow.
+
+> **Snapshot storage:** Every template build leaves its artifacts (rootfs, snapshots, Firecracker metadata) on the client pool under `/var/e2b/templates/<template-id>/...`. Subsequent sandbox creates pull directly from those local assets, so there is no need to rebuild unless you change the template.
 
 ## 8. Validation Checklist
 

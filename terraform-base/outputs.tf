@@ -23,6 +23,11 @@ output "vcn_id" {
   value       = oci_core_vcn.e2b_vcn.id
 }
 
+output "vcn_cidr_block" {
+  description = "CIDR block assigned to the VCN"
+  value       = var.vcn_cidr_block
+}
+
 output "public_subnet_id" {
   description = "OCID of the public subnet"
   value       = oci_core_subnet.e2b_public_subnet.id

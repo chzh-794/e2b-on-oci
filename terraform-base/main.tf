@@ -302,6 +302,28 @@ resource "oci_core_security_list" "e2b_private_sl" {
     }
   }
 
+  # Orchestrator gRPC (mirrors AWS SG default allow-from-VPC policy)
+  ingress_security_rules {
+    protocol    = local.tcp_protocol
+    source      = var.vcn_cidr_block
+    description = "Allow orchestrator gRPC traffic"
+    tcp_options {
+      min = 5008
+      max = 5008
+    }
+  }
+
+  # Template-manager gRPC
+  ingress_security_rules {
+    protocol    = local.tcp_protocol
+    source      = var.vcn_cidr_block
+    description = "Allow template-manager gRPC traffic"
+    tcp_options {
+      min = 5009
+      max = 5009
+    }
+  }
+
   # ICMP for path discovery
   ingress_security_rules {
     protocol    = local.icmp_protocol
@@ -318,19 +340,40 @@ resource "oci_core_security_list" "e2b_private_sl" {
     source      = var.vcn_cidr_block
     source_type = "CIDR_BLOCK"
     description = "Allow ICMP traffic within the VCN"
-
-    icmp_options {
-      type = -1
-      code = -1
-    }
   }
 
-  # Allow all egress
+  # Allow all egress (TODO: tighten after POC once a controlled mirror is available)
   egress_security_rules {
     protocol         = local.all_protocols
     destination      = local.anywhere
     destination_type = "CIDR_BLOCK"
-    description      = "Allow all outbound traffic"
+    description      = "POC fallback: allow outbound internet so private nodes can reach package mirrors"
+  }
+
+  # TODO: Remove after POC – explicit HTTP/HTTPS egress rule to document why internet access is required
+  egress_security_rules {
+    protocol         = local.tcp_protocol
+    destination      = "0.0.0.0/0"
+    destination_type = "CIDR_BLOCK"
+    description      = "Temporary POC rule: apt mirrors over HTTP/HTTPS for offline images"
+
+    tcp_options {
+      min = 80
+      max = 80
+    }
+  }
+
+  # TODO: Remove after POC – HTTPS egress
+  egress_security_rules {
+    protocol         = local.tcp_protocol
+    destination      = "0.0.0.0/0"
+    destination_type = "CIDR_BLOCK"
+    description      = "Temporary POC rule: apt mirrors over HTTPS for offline images"
+
+    tcp_options {
+      min = 443
+      max = 443
+    }
   }
 }
 

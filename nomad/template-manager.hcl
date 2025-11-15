@@ -2,6 +2,9 @@ job "template-manager" {
   datacenters = ["ap-osaka-1"]
   type        = "service"
   priority    = 70
+  meta = {
+    storage_mode = "local"
+  }
 
   reschedule {
     attempts  = 3

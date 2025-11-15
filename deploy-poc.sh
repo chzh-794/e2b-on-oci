@@ -6,27 +6,70 @@ set -e
 set -o pipefail
 set +o history
 
-# Configuration
-SERVER_POOL_PUBLIC="10.0.2.231"
-SERVER_POOL_PRIVATE="10.0.2.231"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${SCRIPT_DIR}/deploy.env"
 
-API_POOL_PUBLIC="10.0.2.198"
-API_POOL_PRIVATE="10.0.2.198"
+if [[ -f "${CONFIG_FILE}" ]]; then
+  echo "Loading deployment configuration from ${CONFIG_FILE}"
+  set -a
+  source "${CONFIG_FILE}"
+  set +a
+else
+  echo "Missing ${CONFIG_FILE}. Copy deploy.env.example to deploy.env and fill in your OCI values."
+  exit 1
+fi
 
-CLIENT_POOL_PUBLIC="10.0.2.73"
-CLIENT_POOL_PRIVATE="10.0.2.73"
+SSH_USER=${SSH_USER:-ubuntu}
+SSH_KEY=${SSH_KEY:-$HOME/.ssh/e2b_id_rsa}
+SSH_KEY=${SSH_KEY/#\~/$HOME}
+POSTGRES_USER=${POSTGRES_USER:-admin}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-E2bP0cPostgres!2025}
+POSTGRES_DB=${POSTGRES_DB:-postgres}
+POSTGRES_PORT=${POSTGRES_PORT:-5432}
+ARTIFACTS_DIR=${ARTIFACTS_DIR:-"${SCRIPT_DIR}/artifacts/bin"}
 
-# OCI Managed Services
-POSTGRES_HOST="10.0.2.127"
-POSTGRES_USER="admin"
-POSTGRES_PASSWORD="E2bP0cPostgres!2025"
-POSTGRES_DB="postgres"
-POSTGRES_PORT="5432"
+SERVER_POOL_PRIVATE=${SERVER_POOL_PRIVATE:-$SERVER_POOL_PUBLIC}
+API_POOL_PRIVATE=${API_POOL_PRIVATE:-$API_POOL_PUBLIC}
+CLIENT_POOL_PRIVATE=${CLIENT_POOL_PRIVATE:-$CLIENT_POOL_PUBLIC}
 
-REDIS_ENDPOINT="aaax7756raag5e34ggx7safceks7dzhj6o5srzjqqxxdynjjatt354a-p.redis.ap-osaka-1.oci.oraclecloud.com"
-REDIS_PORT="6379"
+REQUIRED_VARS=(
+  BASTION_HOST
+  SERVER_POOL_PUBLIC
+  API_POOL_PUBLIC
+  CLIENT_POOL_PUBLIC
+  POSTGRES_HOST
+)
+MISSING_VARS=()
+for var in "${REQUIRED_VARS[@]}"; do
+  value="${!var}"
+  if [[ -z "${value}" ]] || [[ ${value} == REPLACE_* ]]; then
+    MISSING_VARS+=("${var}")
+  fi
+done
+
+if [[ ${#MISSING_VARS[@]} -ne 0 ]]; then
+  echo "The following variables are missing or unset: ${MISSING_VARS[*]}"
+  echo "Update deploy.env before running this script."
+  exit 1
+fi
+
+REDIS_ENDPOINT=${REDIS_ENDPOINT:-"aaax7756raag5e34ggx7safceks7dzhj6o5srzjqqxxdynjjatt354a-p.redis.ap-osaka-1.oci.oraclecloud.com"}
+REDIS_PORT=${REDIS_PORT:-"6379"}
+CONSUL_GOSSIP_KEY=${CONSUL_GOSSIP_KEY:-"u1N1pLZm4iM5XOoCFu3Hy7Db2Z7hP6rXH0y0Y9MZ4XI="}
+CONSUL_SERVERS_VAR=${CONSUL_SERVERS:-${SERVER_POOL_PRIVATE}}
 
 POSTGRES_CONNECTION_STRING="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=require"
+
+KNOWN_HOSTS_FILE=${KNOWN_HOSTS_FILE:-$HOME/.ssh/known_hosts}
+mkdir -p "$(dirname "${KNOWN_HOSTS_FILE}")"
+touch "${KNOWN_HOSTS_FILE}"
+if [[ -n "${BASTION_HOST}" ]]; then
+  ssh-keygen -R "${BASTION_HOST}" >/dev/null 2>&1 || true
+  if ! ssh-keygen -F "${BASTION_HOST}" -f "${KNOWN_HOSTS_FILE}" >/dev/null 2>&1; then
+    ssh-keyscan -H "${BASTION_HOST}" >> "${KNOWN_HOSTS_FILE}" 2>/dev/null || true
+  fi
+fi
+
 
 FIRECRACKER_RELEASE="v1.10.1"
 FIRECRACKER_VERSION_FULL="v1.10.1_1fcdaec"
@@ -36,10 +79,207 @@ FIRECRACKER_KERNEL_PATH="/var/e2b/kernels/vmlinux-${FIRECRACKER_KERNEL_VERSION}/
 
 EDGE_SERVICE_SECRET="E2bEdgeSecret2025!"
 
-SSH_USER="ubuntu"
-SSH_KEY="$HOME/.ssh/id_rsa"
-BASTION_HOST="192.29.245.106"
-SSH_OPTS="-i ${SSH_KEY} -o StrictHostKeyChecking=no -o ProxyJump=${SSH_USER}@${BASTION_HOST}"
+SSH_BASE_OPTS=(-i "${SSH_KEY}" -o StrictHostKeyChecking=no -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" -o IdentitiesOnly=yes)
+if [[ -n "${BASTION_HOST}" ]]; then
+  # Use ProxyCommand instead of ProxyJump so we can pass -i to the proxy SSH command
+  SSH_OPTS=("${SSH_BASE_OPTS[@]}" -o ProxyCommand="ssh -i ${SSH_KEY} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=${KNOWN_HOSTS_FILE} -W %h:%p ${SSH_USER}@${BASTION_HOST}")
+else
+  SSH_OPTS=("${SSH_BASE_OPTS[@]}")
+fi
+SSH_COMMAND="ssh"
+
+ensure_consul_agent() {
+  local target_host=$1
+  local target_label=$2
+  local node_class=$3
+
+  echo -e "\n${YELLOW}Ensuring Consul agent on ${target_label} (${target_host})...${NC}"
+  ssh "${SSH_OPTS[@]}" ${SSH_USER}@${target_host} <<EOF
+set -e
+SERVERS_CSV="${CONSUL_SERVERS_VAR}"
+if [[ -z "\$SERVERS_CSV" ]]; then
+  echo "CONSUL_SERVERS not set; cannot configure Consul client." >&2
+  exit 1
+fi
+
+IFS=',' read -ra SERVER_LIST <<< "\$SERVERS_CSV"
+SERVER_JSON="["
+for ip in "\${SERVER_LIST[@]}"; do
+  ip=\$(echo "\$ip" | xargs)
+  [[ -z "\$ip" ]] && continue
+  SERVER_JSON+="\"\$ip\","
+done
+SERVER_JSON="\${SERVER_JSON%,}]"
+
+REGION=\$(curl -sf -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/region || echo "region1")
+PRIVATE_IP=\$(curl -sf -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/vnics/0/privateIp || hostname -I | awk '{print \$1}')
+NODE_NAME=\$(hostname)
+
+sudo useradd --system --home /opt/consul --shell /bin/false consul >/dev/null 2>&1 || true
+sudo mkdir -p /opt/consul/config /opt/consul/data
+sudo chown -R consul:consul /opt/consul
+
+sudo tee /opt/consul/config/client.json >/dev/null <<CONFIG
+{
+  "server": false,
+  "datacenter": "\${REGION}",
+  "node_name": "\${NODE_NAME}",
+  "advertise_addr": "\${PRIVATE_IP}",
+  "bind_addr": "\${PRIVATE_IP}",
+  "client_addr": "0.0.0.0",
+  "retry_join": \${SERVER_JSON},
+  "encrypt": "${CONSUL_GOSSIP_KEY}",
+  "acl": {
+    "enabled": false
+  }
+}
+CONFIG
+
+sudo tee /etc/systemd/system/consul.service >/dev/null <<'SERVICE'
+[Unit]
+Description=HashiCorp Consul Client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=consul
+Group=consul
+ExecStart=/usr/local/bin/consul agent -config-dir=/opt/consul/config -data-dir=/opt/consul/data
+ExecReload=/usr/local/bin/consul reload
+ExecStop=/usr/local/bin/consul leave
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now consul.service
+sudo systemctl status consul --no-pager | head -n 5 || true
+EOF
+  echo "✓ Consul agent ensured on ${target_label}"
+}
+
+configure_consul_dns() {
+  local target_host=$1
+  local target_label=$2
+
+  echo -e "\n${YELLOW}Configuring Consul DNS forwarding on ${target_label} (${target_host})...${NC}"
+  ssh "${SSH_OPTS[@]}" ${SSH_USER}@${target_host} <<'EOF'
+set -e
+sudo mkdir -p /etc/systemd/resolved.conf.d
+sudo tee /etc/systemd/resolved.conf.d/consul.conf >/dev/null <<'CONF'
+[Resolve]
+DNS=127.0.0.1:8600
+DNSSEC=false
+Domains=~consul
+CONF
+sudo systemctl restart systemd-resolved
+EOF
+  echo "✓ Consul DNS forwarding configured on ${target_label}"
+}
+
+stage_repo() {
+  local target_host=$1
+  local target_label=$2
+
+  echo -e "\n${YELLOW}Staging repository on ${target_label} (${target_host})...${NC}"
+  tar -C "${SCRIPT_DIR}" \
+    --exclude '.git' \
+    --exclude 'artifacts/bin' \
+    --exclude 'e2b-oci-stack.zip' \
+    --exclude 'e2b-oci-cluster.zip' \
+    --exclude 'deploy.env' \
+    -czf - . \
+    | ssh "${SSH_OPTS[@]}" ${SSH_USER}@${target_host} 'rm -rf ~/e2b && mkdir -p ~/e2b && tar -xzf - -C ~/e2b'
+  echo "✓ Repository staged on ${target_label}"
+}
+
+ensure_nomad_agent() {
+  local target_host=$1
+  local target_label=$2
+  local node_class=$3
+
+  echo -e "\n${YELLOW}Ensuring Nomad agent on ${target_label} (${target_host})...${NC}"
+  ssh "${SSH_OPTS[@]}" ${SSH_USER}@${target_host} <<EOF
+set -e
+SERVER_ADDR="${SERVER_POOL_PRIVATE}:4647"
+if [[ -z "\$SERVER_ADDR" ]]; then
+  echo "SERVER_POOL_PRIVATE is not set; cannot configure Nomad client." >&2
+  exit 1
+fi
+
+REGION=\$(curl -sf -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/region || echo "region1")
+PRIVATE_IP=\$(curl -sf -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/vnics/0/privateIp || hostname -I | awk '{print \$1}')
+NODE_NAME=\$(hostname)
+
+sudo mkdir -p /opt/nomad/config /opt/nomad/data /var/e2b/templates
+
+if [[ ! -f /etc/systemd/system/nomad.service ]]; then
+  sudo tee /opt/nomad/config/client.hcl >/dev/null <<CONFIG
+name       = "\${NODE_NAME}"
+data_dir   = "/opt/nomad/data"
+region     = "\${REGION}"
+datacenter = "\${REGION}"
+bind_addr  = "0.0.0.0"
+
+advertise {
+  http = "\${PRIVATE_IP}:4646"
+  rpc  = "\${PRIVATE_IP}:4647"
+  serf = "\${PRIVATE_IP}:4648"
+}
+
+client {
+  enabled    = true
+  node_class = "${node_class}"
+  servers    = ["\${SERVER_ADDR}"]
+
+  host_volume "e2b-templates" {
+    path      = "/var/e2b/templates"
+    read_only = false
+  }
+}
+
+plugin "raw_exec" {
+  config {
+    enabled = true
+  }
+}
+
+consul {
+  address = "127.0.0.1:8500"
+}
+
+telemetry {
+  prometheus_metrics = true
+}
+CONFIG
+
+  sudo tee /etc/systemd/system/nomad.service >/dev/null <<'SERVICE'
+[Unit]
+Description=HashiCorp Nomad Client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/nomad agent -config=/opt/nomad/config
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGINT
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+fi
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now nomad.service
+sudo systemctl status nomad --no-pager | head -n 5 || true
+EOF
+  echo "✓ Nomad agent ensured on ${target_label}"
+}
 
 # Colors
 GREEN='\033[0;32m'
@@ -48,7 +288,6 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGES_DIR="${SCRIPT_DIR}/packages"
 
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
@@ -68,15 +307,18 @@ echo -e "${GREEN}═════════════════════
 
 # TEMPORARILY SKIP SERVER POOL - Not critical for POC
 # echo -e "\n${YELLOW}[1/3] Installing dependencies on Server Pool...${NC}"
-# ssh $SSH_OPTS ${SSH_USER}@${SERVER_POOL_PUBLIC} << 'ENDSSH'
+# ssh "${SSH_OPTS[@]}" ${SSH_USER}@${SERVER_POOL_PUBLIC} << 'ENDSSH'
 # sudo apt update
 # echo "✓ Package list updated"
 # ENDSSH
 echo -e "\n${YELLOW}[1/3] Skipping Server Pool (not critical for POC)...${NC}"
 
 echo -e "\n${YELLOW}[2/3] Installing dependencies on API Pool...${NC}"
-ssh $SSH_OPTS ${SSH_USER}@${API_POOL_PUBLIC} << 'ENDSSH'
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_POOL_PUBLIC} << 'ENDSSH'
 set -e
+sudo sh -c 'printf "Acquire::ForceIPv4 \"true\";\n" > /etc/apt/apt.conf.d/99force-ipv4'
+while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 2; done
+while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
 sudo apt update
 sudo DEBIAN_FRONTEND=noninteractive apt install -y wget curl postgresql-client
 echo "✓ PostgreSQL client installed (using OCI managed database)"
@@ -94,11 +336,18 @@ fi
 ENDSSH
 
 echo -e "\n${YELLOW}[3/3] Installing dependencies on Client Pool...${NC}"
-ssh $SSH_OPTS ${SSH_USER}@${CLIENT_POOL_PUBLIC} << 'ENDSSH'
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PUBLIC} << 'ENDSSH'
 set -e
+sudo sh -c 'printf "Acquire::ForceIPv4 \"true\";\n" > /etc/apt/apt.conf.d/99force-ipv4'
+while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 2; done
+while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
 sudo apt update
+sudo systemctl stop docker docker.socket >/dev/null 2>&1 || true
+sudo apt remove -y docker-ce docker-ce-cli docker-buildx-plugin docker-compose-plugin containerd containerd.io >/dev/null 2>&1 || true
 sudo DEBIAN_FRONTEND=noninteractive apt install -y wget curl docker.io
-sudo systemctl enable --now docker
+sudo systemctl daemon-reload
+sudo systemctl enable --now docker.socket
+sudo systemctl restart docker || sudo systemctl start docker
 
 # Install Go
 if ! command -v go &> /dev/null; then
@@ -123,6 +372,18 @@ ENDSSH
 
 echo -e "${GREEN}✓ Phase 1 Complete: All dependencies installed${NC}"
 
+# Stage repo contents on API & Client pools for migrations/configs
+stage_repo ${API_POOL_PUBLIC} "API Pool"
+stage_repo ${CLIENT_POOL_PUBLIC} "Client Pool"
+
+echo -e "\n${YELLOW}Ensuring Nomad agents are running...${NC}"
+ensure_consul_agent ${API_POOL_PUBLIC} "API Pool" "api"
+ensure_consul_agent ${CLIENT_POOL_PUBLIC} "Client Pool" "client"
+configure_consul_dns ${API_POOL_PUBLIC} "API Pool"
+configure_consul_dns ${CLIENT_POOL_PUBLIC} "Client Pool"
+ensure_nomad_agent ${API_POOL_PUBLIC} "API Pool" "api"
+ensure_nomad_agent ${CLIENT_POOL_PUBLIC} "Client Pool" "client"
+
 # Phase 1b: Install Firecracker and Kernels
 echo -e "\n${GREEN}═══════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}Phase 1b: Installing Firecracker ${FIRECRACKER_RELEASE} and kernel ${FIRECRACKER_KERNEL_VERSION}${NC}"
@@ -133,39 +394,36 @@ install_firecracker() {
   local target_label=$2
 
   echo -e "\n${YELLOW}Installing Firecracker on ${target_label} (${target_host})...${NC}"
-  ssh \
-    FIRECRACKER_RELEASE="${FIRECRACKER_RELEASE}" \
-    FIRECRACKER_VERSION="${FIRECRACKER_VERSION_FULL}" \
-    CI_VERSION="${FIRECRACKER_CI_VERSION}" \
-    KERNEL_VERSION="${FIRECRACKER_KERNEL_VERSION}" \
-    $SSH_OPTS ${SSH_USER}@${target_host} <<'EOF'
+  ssh "${SSH_OPTS[@]}" ${SSH_USER}@${target_host} <<EOF
 set -e
-TMP_DIR=$(mktemp -d)
-cd $TMP_DIR
+FIRECRACKER_RELEASE="${FIRECRACKER_RELEASE}"
+FIRECRACKER_VERSION="${FIRECRACKER_VERSION_FULL}"
+CI_VERSION="${FIRECRACKER_CI_VERSION}"
+KERNEL_VERSION="${FIRECRACKER_KERNEL_VERSION}"
+TMP_DIR=\$(mktemp -d)
+cd \$TMP_DIR
 
 sudo rm -f /usr/local/bin/firecracker
-curl -sSL https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_RELEASE}/firecracker-${FIRECRACKER_RELEASE}-x86_64.tgz | tar -xz
-sudo mv release-${FIRECRACKER_RELEASE}-x86_64/firecracker-${FIRECRACKER_RELEASE}-x86_64 /usr/local/bin/firecracker
+curl -sSL https://github.com/firecracker-microvm/firecracker/releases/download/\${FIRECRACKER_RELEASE}/firecracker-\${FIRECRACKER_RELEASE}-x86_64.tgz | tar -xz
+sudo mv release-\${FIRECRACKER_RELEASE}-x86_64/firecracker-\${FIRECRACKER_RELEASE}-x86_64 /usr/local/bin/firecracker
 sudo chmod +x /usr/local/bin/firecracker
-rm -rf release-${FIRECRACKER_RELEASE}-x86_64
+rm -rf release-\${FIRECRACKER_RELEASE}-x86_64
 
-curl -sSL https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/${CI_VERSION}/x86_64/vmlinux-${KERNEL_VERSION} -o vmlinux.bin
-sudo mkdir -p /var/e2b/kernels/vmlinux-${KERNEL_VERSION}
-sudo mv vmlinux.bin /var/e2b/kernels/vmlinux-${KERNEL_VERSION}/vmlinux.bin
+curl -sSL https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/\${CI_VERSION}/x86_64/vmlinux-\${KERNEL_VERSION} -o vmlinux.bin
+sudo mkdir -p /var/e2b/kernels/vmlinux-\${KERNEL_VERSION}
+sudo mv vmlinux.bin /var/e2b/kernels/vmlinux-\${KERNEL_VERSION}/vmlinux.bin
 sudo chown -R nomad:nomad /var/e2b/kernels
 
-sudo mkdir -p /fc-versions/${FIRECRACKER_VERSION}
-sudo cp /usr/local/bin/firecracker /fc-versions/${FIRECRACKER_VERSION}/firecracker
-sudo chmod +x /fc-versions/${FIRECRACKER_VERSION}/firecracker
+sudo mkdir -p /fc-versions/\${FIRECRACKER_VERSION}
+sudo install -m 0755 /usr/local/bin/firecracker /fc-versions/\${FIRECRACKER_VERSION}/firecracker
 
-sudo mkdir -p /fc-kernels/${KERNEL_VERSION}
-sudo cp /var/e2b/kernels/vmlinux-${KERNEL_VERSION}/vmlinux.bin /fc-kernels/${KERNEL_VERSION}/vmlinux.bin
-sudo chmod 0644 /fc-kernels/${KERNEL_VERSION}/vmlinux.bin
+sudo mkdir -p /fc-kernels/\${KERNEL_VERSION}
+sudo install -m 0644 /var/e2b/kernels/vmlinux-\${KERNEL_VERSION}/vmlinux.bin /fc-kernels/\${KERNEL_VERSION}/vmlinux.bin
 
 sudo mkdir -p /mnt/disks/fc-envs/v1
 sudo chown -R nomad:nomad /fc-kernels /fc-versions /mnt/disks/fc-envs || true
 
-rm -rf $TMP_DIR
+rm -rf \$TMP_DIR
 EOF
   echo "✓ Firecracker installed on ${target_label}"
 }
@@ -178,7 +436,7 @@ echo -e "\n${GREEN}════════════════════�
 echo -e "${GREEN}Phase 1c: Running database migrations${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 
-if ssh $SSH_OPTS ${SSH_USER}@${API_POOL_PUBLIC} <<EOF
+if ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_POOL_PUBLIC} <<EOF
 set -e
 set +o history
 export POSTGRES_CONNECTION_STRING='${POSTGRES_CONNECTION_STRING}'
@@ -208,23 +466,23 @@ echo -e "\n${GREEN}════════════════════�
 echo -e "${GREEN}Phase 2: Uploading Prebuilt Binaries${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 
-BINARY_DIR="${SCRIPT_DIR}/artifacts/bin"
+BINARY_DIR="${ARTIFACTS_DIR}"
 if [[ ! -d "${BINARY_DIR}" ]]; then
   echo "${RED}✗ Prebuilt binaries not found in ${BINARY_DIR}. Please run local builds first.${NC}"
   exit 1
 fi
 
 echo -e "\n${YELLOW}Uploading binaries to API pool...${NC}"
-ssh ${SSH_OPTS} ${SSH_USER}@${API_POOL_PUBLIC} "mkdir -p ~/e2b/bin && sudo chown -R ${SSH_USER}:${SSH_USER} ~/e2b"
-scp ${SSH_OPTS} ${BINARY_DIR}/e2b-api ${SSH_USER}@${API_POOL_PUBLIC}:~/e2b/bin/
-scp ${SSH_OPTS} ${BINARY_DIR}/client-proxy ${SSH_USER}@${API_POOL_PUBLIC}:~/e2b/bin/
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_POOL_PUBLIC} "mkdir -p ~/e2b/bin && sudo chown -R ${SSH_USER}:${SSH_USER} ~/e2b"
+scp "${SSH_OPTS[@]}" ${BINARY_DIR}/e2b-api ${SSH_USER}@${API_POOL_PUBLIC}:~/e2b/bin/
+scp "${SSH_OPTS[@]}" ${BINARY_DIR}/client-proxy ${SSH_USER}@${API_POOL_PUBLIC}:~/e2b/bin/
 echo "✓ Binaries uploaded to API pool"
 
 echo -e "\n${YELLOW}Uploading binaries to Client pool...${NC}"
-ssh ${SSH_OPTS} ${SSH_USER}@${CLIENT_POOL_PUBLIC} "mkdir -p ~/e2b/bin && sudo chown -R ${SSH_USER}:${SSH_USER} ~/e2b && rm -f ~/e2b/bin/template-manager"
-scp ${SSH_OPTS} ${BINARY_DIR}/orchestrator ${SSH_USER}@${CLIENT_POOL_PUBLIC}:~/e2b/bin/
-scp ${SSH_OPTS} ${BINARY_DIR}/template-manager ${SSH_USER}@${CLIENT_POOL_PUBLIC}:~/e2b/bin/
-scp ${SSH_OPTS} ${BINARY_DIR}/envd ${SSH_USER}@${CLIENT_POOL_PUBLIC}:~/e2b/bin/
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PUBLIC} "mkdir -p ~/e2b/bin && sudo chown -R ${SSH_USER}:${SSH_USER} ~/e2b && rm -f ~/e2b/bin/template-manager"
+scp "${SSH_OPTS[@]}" ${BINARY_DIR}/orchestrator ${SSH_USER}@${CLIENT_POOL_PUBLIC}:~/e2b/bin/
+scp "${SSH_OPTS[@]}" ${BINARY_DIR}/template-manager ${SSH_USER}@${CLIENT_POOL_PUBLIC}:~/e2b/bin/
+scp "${SSH_OPTS[@]}" ${BINARY_DIR}/envd ${SSH_USER}@${CLIENT_POOL_PUBLIC}:~/e2b/bin/
 echo "✓ Binaries uploaded to Client pool"
 
 echo -e "${GREEN}✓ Phase 2 Complete: Prebuilt binaries uploaded${NC}"
@@ -256,13 +514,13 @@ echo -e "${GREEN}Phase 6: Creating Configuration Files${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 
 echo -e "\n${YELLOW}Creating API service configuration...${NC}"
-ssh $SSH_OPTS ${SSH_USER}@${API_POOL_PUBLIC} << ENDSSH
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_POOL_PUBLIC} << ENDSSH
 cat > ~/e2b/api.env <<ENDENV
 # PostgreSQL Configuration (OCI Database)
 POSTGRES_CONNECTION_STRING=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=require
 
 # Storage Configuration (Local for POC)
-STORAGE_PROVIDER=local
+STORAGE_PROVIDER=Local
 LOCAL_TEMPLATE_STORAGE_BASE_PATH=/var/e2b/templates
 
 # Redis Configuration (optional single-node fallback)
@@ -289,7 +547,7 @@ echo "✓ API configuration created"
 ENDSSH
 
 echo -e "\n${YELLOW}Creating Client Proxy configuration...${NC}"
-ssh $SSH_OPTS ${SSH_USER}@${API_POOL_PUBLIC} << ENDSSH
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_POOL_PUBLIC} << ENDSSH
 cat > ~/e2b/client-proxy.env <<ENDENV
 # Service Configuration
 PORT=3001
@@ -328,10 +586,10 @@ echo "✓ Client Proxy configuration created"
 ENDSSH
 
 echo -e "\n${YELLOW}Creating Orchestrator configuration...${NC}"
-ssh $SSH_OPTS ${SSH_USER}@${CLIENT_POOL_PUBLIC} << ENDSSH
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PUBLIC} << ENDSSH
 cat > ~/e2b/orchestrator.env <<ENDENV
 # Storage Configuration (Local for POC)
-STORAGE_PROVIDER=local
+STORAGE_PROVIDER=Local
 LOCAL_TEMPLATE_STORAGE_BASE_PATH=/var/e2b/templates
 
 # Firecracker Configuration
@@ -365,10 +623,10 @@ echo "✓ Orchestrator configuration created"
 ENDSSH
 
 echo -e "\n${YELLOW}Creating Template Manager configuration...${NC}"
-ssh $SSH_OPTS ${SSH_USER}@${CLIENT_POOL_PUBLIC} << ENDSSH
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PUBLIC} << ENDSSH
 cat > ~/e2b/template-manager.env <<ENDENV
 # Storage Configuration (Local for POC)
-STORAGE_PROVIDER=local
+STORAGE_PROVIDER=Local
 LOCAL_TEMPLATE_STORAGE_BASE_PATH=/var/e2b/templates
 
 # Firecracker Configuration
@@ -403,7 +661,7 @@ echo -e "${GREEN}Phase 7: Promoting artifacts to /opt/e2b${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 
 echo -e "\n${YELLOW}Syncing API payload to /opt/e2b...${NC}"
-ssh $SSH_OPTS ${SSH_USER}@${API_POOL_PUBLIC} <<'ENDSSH'
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_POOL_PUBLIC} <<'ENDSSH'
 set -e
 sudo mkdir -p /opt/e2b
 sudo rsync -a --delete ~/e2b/ /opt/e2b/
@@ -414,7 +672,7 @@ ENDSSH
 echo "✓ API payload ready under /opt/e2b"
 
 echo -e "\n${YELLOW}Syncing Client payload to /opt/e2b...${NC}"
-ssh $SSH_OPTS ${SSH_USER}@${CLIENT_POOL_PUBLIC} <<'ENDSSH'
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PUBLIC} <<'ENDSSH'
 set -e
 sudo mkdir -p /opt/e2b
 sudo rsync -a --delete ~/e2b/ /opt/e2b/
@@ -431,16 +689,15 @@ echo -e "\n${GREEN}════════════════════�
 echo -e "${GREEN}Phase 8: Preparing Template Runtime Assets${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 
-ssh \
-  FIRECRACKER_VERSION="${FIRECRACKER_VERSION_FULL}" \
-  KERNEL_VERSION="${FIRECRACKER_KERNEL_VERSION}" \
-  $SSH_OPTS ${SSH_USER}@${CLIENT_POOL_PUBLIC} <<'EOF'
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PUBLIC} <<EOF
 set -e
-sudo mkdir -p /fc-envd /fc-versions/${FIRECRACKER_VERSION} /fc-kernels/${KERNEL_VERSION} /mnt/disks/fc-envs/v1
+FIRECRACKER_VERSION="${FIRECRACKER_VERSION_FULL}"
+KERNEL_VERSION="${FIRECRACKER_KERNEL_VERSION}"
+sudo mkdir -p /fc-envd /fc-versions/\${FIRECRACKER_VERSION} /fc-kernels/\${KERNEL_VERSION} /mnt/disks/fc-envs/v1
 sudo cp /opt/e2b/bin/envd /fc-envd/envd
 sudo chmod 0755 /fc-envd/envd
-sudo ln -sf /usr/local/bin/firecracker /fc-versions/${FIRECRACKER_VERSION}/firecracker
-sudo ln -sf /var/e2b/kernels/vmlinux-${KERNEL_VERSION}/vmlinux.bin /fc-kernels/${KERNEL_VERSION}/vmlinux.bin
+sudo ln -sf /usr/local/bin/firecracker /fc-versions/\${FIRECRACKER_VERSION}/firecracker
+sudo ln -sf /var/e2b/kernels/vmlinux-\${KERNEL_VERSION}/vmlinux.bin /fc-kernels/\${KERNEL_VERSION}/vmlinux.bin
 sudo chown -R nomad:nomad /fc-envd /fc-versions /fc-kernels /mnt/disks/fc-envs || true
 EOF
 echo "✓ Template runtime assets prepared on Client pool"

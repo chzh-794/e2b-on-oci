@@ -3,12 +3,22 @@
 
 set -e
 
-# Database configuration
-POSTGRES_HOST="10.1.2.168"
-POSTGRES_PORT="5432"
-POSTGRES_USER="postgres"
-POSTGRES_PASSWORD="E2bPostgres123!"
-POSTGRES_DB="postgres"
+# Load deploy.env if available (only exists on the workstation)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG_FILE="${REPO_ROOT}/deploy.env"
+if [[ -f "${CONFIG_FILE}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${CONFIG_FILE}"
+  set +a
+fi
+
+# Database configuration (can be overridden via env vars or deploy.env)
+POSTGRES_HOST=${POSTGRES_HOST:-"10.1.2.168"}
+POSTGRES_PORT=${POSTGRES_PORT:-"5432"}
+POSTGRES_USER=${POSTGRES_USER:-"postgres"}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-"E2bPostgres123!"}
+POSTGRES_DB=${POSTGRES_DB:-"postgres"}
 
 # E2B user configuration
 EMAIL="admin@e2b-oci-poc.local"
@@ -31,7 +41,7 @@ echo ""
 
 # Step 1: Run migrations (create schema)
 echo "Step 1: Running migrations (creating database schema)..."
-psql -h ${POSTGRES_HOST} -p ${POSTGRES_PORT} -U ${POSTGRES_USER} -d ${POSTGRES_DB} -f ${SCRIPT_DIR}/migration.sql
+psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -f "${SCRIPT_DIR}/migration.sql"
 
 if [ $? -eq 0 ]; then
     echo "✓ Database schema created"
@@ -42,18 +52,33 @@ fi
 
 echo ""
 
+# Ensure legacy columns are dropped so the API schema matches the database
+echo "Step 1b: Normalizing template schema..."
+psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" <<'SQL'
+ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS dockerfile;
+ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS build_id;
+ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS vcpu;
+ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS ram_mb;
+ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS free_disk_size_mb;
+ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS total_disk_size_mb;
+ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS kernel_version;
+ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS firecracker_version;
+SQL
+echo "✓ Schema normalized"
+echo ""
+
 # Step 2: Seed database with test user/team
 echo "Step 2: Seeding database with test user and team..."
 echo "  Email: ${EMAIL}"
 echo "  Team ID: ${TEAM_ID}"
 echo ""
 
-psql -h ${POSTGRES_HOST} -p ${POSTGRES_PORT} -U ${POSTGRES_USER} -d ${POSTGRES_DB} \
+psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
     -v email="${EMAIL}" \
     -v teamID="${TEAM_ID}" \
     -v accessToken="${ACCESS_TOKEN}" \
     -v teamAPIKey="${TEAM_API_KEY}" \
-    -f ${SCRIPT_DIR}/simple-seed.sql
+    -f "${SCRIPT_DIR}/simple-seed.sql"
 
 if [ $? -eq 0 ]; then
     echo "✓ Database seeded"

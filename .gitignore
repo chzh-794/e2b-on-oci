@@ -1,5 +1,6 @@
 # Project exclusions
 POC_SUMMARY.md
+COMPARISON_OCI_vs_AWS.md
 
 # POC-specific files (exclude from git)
 examples/
@@ -12,6 +13,11 @@ packages/*.env.example
 
 # Generated bundles
 e2b-oci-*.zip
+
+# Deployment config (copy deploy.env.example -> deploy.env locally)
+deploy.env
+api-creds.env
+
 
 # POC deployment scripts (all .sh files in root)
 *.sh
@@ -53,3 +59,4 @@ Thumbs.db
 credentials.json
 secrets.yaml
 ops-notes.md
+packages/bin/
