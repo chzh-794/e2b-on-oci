@@ -48,7 +48,7 @@ const (
 
 	version = "0.1.0"
 
-	fileLockName = "/orchestrator.lock"
+	fileLockName = "/opt/e2b/runtime/orchestrator.lock"
 )
 
 var (

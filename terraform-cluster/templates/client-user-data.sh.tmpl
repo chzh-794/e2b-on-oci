@@ -40,6 +40,39 @@ sudo modprobe -r nbd || true
 sudo modprobe nbd max_part=16 nbds_max=128
 sudo sysctl -w kernel.unprivileged_userns_clone=1
 
+# Mount /run/netns as shared for named network namespace support
+# This is required for netns.NewNamed() to work (used by orchestrator for sandbox network isolation)
+# /var/run/netns is a symlink to /run/netns
+# Create systemd service to ensure /run/netns is mounted as shared on boot
+sudo mkdir -p /var/run/netns /run/netns
+sudo tee /etc/systemd/system/e2b-netns.service >/dev/null <<'EOF'
+[Unit]
+Description=Mount /run/netns as shared for network namespace support
+After=local-fs.target
+Before=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'mount --make-shared /run 2>/dev/null || true; umount /run/netns 2>/dev/null || true; mount -t tmpfs -o shared tmpfs /run/netns'
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable e2b-netns.service
+sudo systemctl start e2b-netns.service
+
+# Grant CAP_SYS_ADMIN to unshare, bash, and ip binaries for Firecracker namespace isolation
+# This allows nomad user to:
+# - Run 'unshare -pf' and perform tmpfs mounts inside the unshare namespace
+# - Create network namespaces via 'ip netns add' (which requires mount permissions for /run/netns)
+sudo setcap cap_sys_admin+ep /usr/bin/unshare || true
+sudo setcap cap_sys_admin+ep /usr/bin/bash || true
+sudo setcap cap_sys_admin+ep /usr/bin/ip || true
+
 sudo mkdir -p /opt/consul/bin /opt/nomad/bin /opt/e2b/runtime /orchestrator /var/e2b/templates /fc-envd /fc-kernels /fc-versions /mnt/disks/fc-envs/v1
 sudo chmod 0755 /opt/consul /opt/nomad /opt/e2b /opt/e2b/runtime /orchestrator
 sudo chown -R ubuntu:ubuntu /var/e2b /fc-envd /mnt/disks/fc-envs
@@ -126,41 +159,17 @@ WAN_IF=$(ip route get 8.8.8.8 | awk '{for(i=1;i<=NF;i++) if($i=="dev") {print $(
 sudo sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward = 1" | sudo tee /etc/sysctl.d/99-e2b-ipforward.conf >/dev/null
 
-if command -v nft >/dev/null 2>&1 && [ -n "$${WAN_IF}" ]; then
-  sudo mkdir -p /etc/nftables.d
-  sudo bash -c "cat <<EOF >/etc/nftables.d/e2b.nft
- flush table inet e2b
- table inet e2b {
-   chain postrouting {
-     type nat hook postrouting priority srcnat;
-     policy accept;
-     oifname \"$${WAN_IF}\" ip saddr 169.254.0.0/16 counter masquerade
-     oifname \"$${WAN_IF}\" ip saddr 10.12.0.0/16 counter masquerade
-   }
-
-   chain forward {
-     type filter hook forward priority filter;
-     policy accept;
-     iifname \"$${WAN_IF}\" oifname \"veth*\" ct state related,established counter accept
-     iifname \"veth*\" oifname \"$${WAN_IF}\" counter accept
-     iifname \"$${WAN_IF}\" oifname \"tap0\" ct state related,established counter accept
-     iifname \"tap0\" oifname \"$${WAN_IF}\" counter accept
-   }
- }
-EOF"
-
-  if ! sudo grep -q '/etc/nftables.d/*.nft' /etc/nftables.conf 2>/dev/null; then
-    sudo bash -c "echo 'include \"/etc/nftables.d/*.nft\"' >>/etc/nftables.conf"
-  fi
-
-  sudo nft delete table inet e2b >/dev/null 2>&1 || true
-  sudo nft -f /etc/nftables.d/e2b.nft
-  sudo systemctl enable --now nftables || true
-elif command -v iptables >/dev/null 2>&1; then
+# Configure iptables (POC explicitly disabled nftables - see POC_SUMMARY.md)
+# Flush and configure INPUT chain to allow intra-cluster communication
+if command -v iptables >/dev/null 2>&1; then
   sudo iptables -F INPUT || true
   sudo iptables -P INPUT ACCEPT || true
   sudo iptables -F FORWARD || true
   sudo iptables -P FORWARD ACCEPT || true
+
+  # Allow orchestrator and template-manager gRPC ports from VCN
+  sudo iptables -I INPUT 1 -p tcp --dport 5008 -s 10.0.0.0/16 -j ACCEPT || true
+  sudo iptables -I INPUT 1 -p tcp --dport 5009 -s 10.0.0.0/16 -j ACCEPT || true
 
   if [ -n "$${WAN_IF}" ]; then
     sudo iptables -t nat -A POSTROUTING -s 169.254.0.0/16 -o "$${WAN_IF}" -j MASQUERADE

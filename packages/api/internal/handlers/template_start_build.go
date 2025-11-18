@@ -187,12 +187,9 @@ func (a *APIStore) PostTemplatesTemplateIDBuildsBuildID(c *gin.Context, template
 		return
 	}
 
-	// team is part of the cluster but template build is not assigned to a cluster node so its invalid stats
-	if team.ClusterID != nil && build.ClusterNodeID == nil {
-		a.sendAPIStoreError(c, http.StatusInternalServerError, "build is not assigned to a cluster node")
-		telemetry.ReportCriticalError(ctx, "build is not assigned to a cluster node", nil, telemetry.WithTemplateID(templateID))
-		return
-	}
+	// Note: team.ClusterID is for sandbox routing, not template builds
+	// Template builds can use local template manager when build.ClusterNodeID is nil
+	// This is allowed - getBuilderClient will fallback to local template manager
 
 	// Call the Template Manager to build the environment
 	zap.L().Info("开始创建模板", 

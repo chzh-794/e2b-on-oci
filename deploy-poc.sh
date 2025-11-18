@@ -26,11 +26,14 @@ POSTGRES_USER=${POSTGRES_USER:-admin}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-E2bP0cPostgres!2025}
 POSTGRES_DB=${POSTGRES_DB:-postgres}
 POSTGRES_PORT=${POSTGRES_PORT:-5432}
-ARTIFACTS_DIR=${ARTIFACTS_DIR:-"${SCRIPT_DIR}/artifacts/bin"}
 
 SERVER_POOL_PRIVATE=${SERVER_POOL_PRIVATE:-$SERVER_POOL_PUBLIC}
 API_POOL_PRIVATE=${API_POOL_PRIVATE:-$API_POOL_PUBLIC}
 CLIENT_POOL_PRIVATE=${CLIENT_POOL_PRIVATE:-$CLIENT_POOL_PUBLIC}
+
+# Always target private IPs via bastion when available
+API_TARGET=${API_POOL_PRIVATE:-$API_POOL_PUBLIC}
+CLIENT_TARGET=${CLIENT_POOL_PRIVATE:-$CLIENT_POOL_PUBLIC}
 
 REQUIRED_VARS=(
   BASTION_HOST
@@ -53,7 +56,7 @@ if [[ ${#MISSING_VARS[@]} -ne 0 ]]; then
   exit 1
 fi
 
-REDIS_ENDPOINT=${REDIS_ENDPOINT:-"aaax7756raag5e34ggx7safceks7dzhj6o5srzjqqxxdynjjatt354a-p.redis.ap-osaka-1.oci.oraclecloud.com"}
+REDIS_ENDPOINT=${REDIS_ENDPOINT:-""}
 REDIS_PORT=${REDIS_PORT:-"6379"}
 CONSUL_GOSSIP_KEY=${CONSUL_GOSSIP_KEY:-"u1N1pLZm4iM5XOoCFu3Hy7Db2Z7hP6rXH0y0Y9MZ4XI="}
 CONSUL_SERVERS_VAR=${CONSUL_SERVERS:-${SERVER_POOL_PRIVATE}}
@@ -63,8 +66,12 @@ POSTGRES_CONNECTION_STRING="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@$
 KNOWN_HOSTS_FILE=${KNOWN_HOSTS_FILE:-$HOME/.ssh/known_hosts}
 mkdir -p "$(dirname "${KNOWN_HOSTS_FILE}")"
 touch "${KNOWN_HOSTS_FILE}"
+# Normalize host keys to avoid blocking on rotation
+ssh-keygen -R "${SERVER_POOL_PRIVATE}" -f "${KNOWN_HOSTS_FILE}" >/dev/null 2>&1 || true
+ssh-keygen -R "${API_POOL_PRIVATE}" -f "${KNOWN_HOSTS_FILE}" >/dev/null 2>&1 || true
+ssh-keygen -R "${CLIENT_POOL_PRIVATE}" -f "${KNOWN_HOSTS_FILE}" >/dev/null 2>&1 || true
 if [[ -n "${BASTION_HOST}" ]]; then
-  ssh-keygen -R "${BASTION_HOST}" >/dev/null 2>&1 || true
+  ssh-keygen -R "${BASTION_HOST}" -f "${KNOWN_HOSTS_FILE}" >/dev/null 2>&1 || true
   if ! ssh-keygen -F "${BASTION_HOST}" -f "${KNOWN_HOSTS_FILE}" >/dev/null 2>&1; then
     ssh-keyscan -H "${BASTION_HOST}" >> "${KNOWN_HOSTS_FILE}" 2>/dev/null || true
   fi
@@ -157,6 +164,32 @@ SERVICE
 sudo systemctl daemon-reload
 sudo systemctl enable --now consul.service
 sudo systemctl status consul --no-pager | head -n 5 || true
+
+# Wait for Consul client to join cluster (up to 60 seconds)
+echo "Waiting for Consul client to join cluster..."
+MAX_WAIT=60
+ELAPSED=0
+while [[ \$ELAPSED -lt \$MAX_WAIT ]]; do
+  if /usr/local/bin/consul members 2>/dev/null | grep -q "server"; then
+    echo "✓ Consul client successfully joined cluster"
+    break
+  fi
+  sleep 2
+  ELAPSED=\$((ELAPSED + 2))
+done
+
+# If still not connected, restart Consul to retry join
+if ! /usr/local/bin/consul members 2>/dev/null | grep -q "server"; then
+  echo "⚠ Consul client not connected after \$MAX_WAIT seconds, restarting to retry join..."
+  sudo systemctl restart consul.service
+  sleep 5
+  # Verify again after restart
+  if /usr/local/bin/consul members 2>/dev/null | grep -q "server"; then
+    echo "✓ Consul client connected after restart"
+  else
+    echo "⚠ Consul client still not connected - may need manual intervention"
+  fi
+fi
 EOF
   echo "✓ Consul agent ensured on ${target_label}"
 }
@@ -187,13 +220,28 @@ stage_repo() {
   echo -e "\n${YELLOW}Staging repository on ${target_label} (${target_host})...${NC}"
   tar -C "${SCRIPT_DIR}" \
     --exclude '.git' \
-    --exclude 'artifacts/bin' \
     --exclude 'e2b-oci-stack.zip' \
     --exclude 'e2b-oci-cluster.zip' \
     --exclude 'deploy.env' \
     -czf - . \
     | ssh "${SSH_OPTS[@]}" ${SSH_USER}@${target_host} 'rm -rf ~/e2b && mkdir -p ~/e2b && tar -xzf - -C ~/e2b'
   echo "✓ Repository staged on ${target_label}"
+}
+
+ensure_nomad_user() {
+  local target_host=$1
+  local target_label=$2
+
+  echo -e "\n${YELLOW}Ensuring nomad user exists on ${target_label} (${target_host})...${NC}"
+  ssh "${SSH_OPTS[@]}" ${SSH_USER}@${target_host} <<'EOF'
+set -e
+if ! id -u nomad >/dev/null 2>&1; then
+  sudo useradd --system --home /var/lib/nomad --shell /usr/sbin/nologin nomad
+fi
+sudo mkdir -p /var/lib/nomad
+sudo chown -R nomad:nomad /var/lib/nomad
+EOF
+  echo "✓ Nomad user ensured on ${target_label}"
 }
 
 ensure_nomad_agent() {
@@ -216,8 +264,25 @@ NODE_NAME=\$(hostname)
 
 sudo mkdir -p /opt/nomad/config /opt/nomad/data /var/e2b/templates
 
-if [[ ! -f /etc/systemd/system/nomad.service ]]; then
-  sudo tee /opt/nomad/config/client.hcl >/dev/null <<CONFIG
+# Check existing config before writing to determine if restart is needed
+CONFIG_NEEDS_UPDATE=false
+if [[ -f /opt/nomad/config/client.hcl ]]; then
+  if ! sudo grep -q "no_cgroups = true" /opt/nomad/config/client.hcl 2>/dev/null; then
+    CONFIG_NEEDS_UPDATE=true
+  fi
+  if ! sudo grep -q "node_class = \"${node_class}\"" /opt/nomad/config/client.hcl 2>/dev/null; then
+    CONFIG_NEEDS_UPDATE=true
+  fi
+  # Also check if meta block has node.class
+  if ! sudo grep -A 5 "meta {" /opt/nomad/config/client.hcl 2>/dev/null | grep -q "\"node.class\""; then
+    CONFIG_NEEDS_UPDATE=true
+  fi
+else
+  CONFIG_NEEDS_UPDATE=true
+fi
+
+# Always update client.hcl to ensure it's correct (required for mount operations)
+sudo tee /opt/nomad/config/client.hcl >/dev/null <<CONFIG
 name       = "\${NODE_NAME}"
 data_dir   = "/opt/nomad/data"
 region     = "\${REGION}"
@@ -235,6 +300,10 @@ client {
   node_class = "${node_class}"
   servers    = ["\${SERVER_ADDR}"]
 
+  meta {
+    "node.class" = "${node_class}"
+  }
+
   host_volume "e2b-templates" {
     path      = "/var/e2b/templates"
     read_only = false
@@ -244,6 +313,7 @@ client {
 plugin "raw_exec" {
   config {
     enabled = true
+    no_cgroups = true
   }
 }
 
@@ -256,6 +326,7 @@ telemetry {
 }
 CONFIG
 
+if [[ ! -f /etc/systemd/system/nomad.service ]]; then
   sudo tee /etc/systemd/system/nomad.service >/dev/null <<'SERVICE'
 [Unit]
 Description=HashiCorp Nomad Client
@@ -275,8 +346,101 @@ SERVICE
 fi
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now nomad.service
-sudo systemctl status nomad --no-pager | head -n 5 || true
+
+# Check if Nomad needs restart
+NOMAD_RUNNING=false
+NEEDS_RESTART=false
+
+# Check if Nomad is currently running
+if sudo systemctl is-active --quiet nomad.service; then
+  NOMAD_RUNNING=true
+fi
+
+# Determine if restart is needed
+# Restart if: config was updated OR Nomad is not running
+if [[ "$CONFIG_NEEDS_UPDATE" == "true" ]]; then
+  NEEDS_RESTART=true
+  if [[ "$NOMAD_RUNNING" == "true" ]]; then
+    echo "Config updated, will restart Nomad to apply changes"
+  else
+    echo "Config updated, will start Nomad"
+  fi
+elif [[ "$NOMAD_RUNNING" == "false" ]]; then
+  NEEDS_RESTART=true
+  echo "Nomad not running, will start it"
+fi
+
+# Only restart if needed
+if [[ "$NEEDS_RESTART" == "true" ]]; then
+  # Stop Nomad if running (plugin configs are only loaded at startup)
+  if [[ "$NOMAD_RUNNING" == "true" ]]; then
+    echo "Stopping Nomad to reload plugin configuration..."
+    sudo systemctl stop nomad.service
+    # Wait for Nomad to fully stop (up to 30 seconds)
+    for i in {1..30}; do
+      if ! sudo systemctl is-active --quiet nomad.service; then
+        break
+      fi
+      sleep 1
+    done
+    if sudo systemctl is-active --quiet nomad.service; then
+      echo "WARNING: Nomad did not stop gracefully, forcing stop..." >&2
+      sudo systemctl kill --kill-who=all nomad.service || true
+      sleep 2
+    fi
+  fi
+
+  # Start Nomad with the new configuration
+  sudo systemctl start nomad.service
+  sudo systemctl enable nomad.service
+
+  # Wait for Nomad to be fully started (up to 30 seconds)
+  for i in {1..30}; do
+    if sudo systemctl is-active --quiet nomad.service; then
+      # Verify Nomad is responding
+      if timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/4646' 2>/dev/null; then
+        exec 3<&-
+        exec 3>&-
+        break
+      fi
+    fi
+    sleep 1
+  done
+
+  sudo systemctl status nomad --no-pager | head -n 5 || true
+else
+  echo "Nomad already running with correct config, skipping restart"
+  # Just verify it's responding
+  if ! timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/4646' 2>/dev/null; then
+    echo "WARNING: Nomad service is active but not responding, restarting..." >&2
+    sudo systemctl restart nomad.service
+    sleep 5
+  fi
+fi
+
+# Verify the plugin config was loaded by checking the config file
+if ! sudo grep -q "no_cgroups = true" /opt/nomad/config/client.hcl; then
+  echo "ERROR: no_cgroups = true not found in Nomad config!" >&2
+  exit 1
+fi
+echo "✓ Verified no_cgroups = true in Nomad config"
+
+# Verify node_class is set in config
+if ! sudo grep -q "node_class = \"${node_class}\"" /opt/nomad/config/client.hcl; then
+  echo "ERROR: node_class = \"${node_class}\" not found in Nomad config!" >&2
+  exit 1
+fi
+echo "✓ Verified node_class = \"${node_class}\" in Nomad config"
+
+# Verify meta block has node.class
+if ! sudo grep -A 5 "meta {" /opt/nomad/config/client.hcl 2>/dev/null | grep -q "\"node.class\""; then
+  echo "ERROR: node.class not found in meta block!" >&2
+  exit 1
+fi
+echo "✓ Verified node.class in meta block"
+
+echo 'ubuntu ALL=(ALL) NOPASSWD: /usr/local/bin/nomad' | sudo tee /etc/sudoers.d/99-e2b-nomad >/dev/null
+sudo chmod 440 /etc/sudoers.d/99-e2b-nomad
 EOF
   echo "✓ Nomad agent ensured on ${target_label}"
 }
@@ -305,23 +469,24 @@ echo -e "${GREEN}═════════════════════
 echo -e "${GREEN}Phase 1: Installing Dependencies${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 
-# TEMPORARILY SKIP SERVER POOL - Not critical for POC
-# echo -e "\n${YELLOW}[1/3] Installing dependencies on Server Pool...${NC}"
-# ssh "${SSH_OPTS[@]}" ${SSH_USER}@${SERVER_POOL_PUBLIC} << 'ENDSSH'
-# sudo apt update
-# echo "✓ Package list updated"
-# ENDSSH
-echo -e "\n${YELLOW}[1/3] Skipping Server Pool (not critical for POC)...${NC}"
+ensure_nomad_user ${API_TARGET} "API Pool"
+ensure_nomad_user ${CLIENT_TARGET} "Client Pool"
+
+echo -e "\n${YELLOW}[1/3] Server Pool already provisioned via Terraform. Skipping host prep...${NC}"
 
 echo -e "\n${YELLOW}[2/3] Installing dependencies on API Pool...${NC}"
-ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_POOL_PUBLIC} << 'ENDSSH'
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_TARGET} << 'ENDSSH'
 set -e
 sudo sh -c 'printf "Acquire::ForceIPv4 \"true\";\n" > /etc/apt/apt.conf.d/99force-ipv4'
 while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 2; done
 while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
 sudo apt update
 sudo DEBIAN_FRONTEND=noninteractive apt install -y wget curl postgresql-client
-echo "✓ PostgreSQL client installed (using OCI managed database)"
+if ! command -v psql >/dev/null 2>&1; then
+  echo "✗ PostgreSQL client (psql) not found after installation attempt" >&2
+  exit 1
+fi
+echo "✓ PostgreSQL client installed: $(psql --version | head -n1)"
 
 # Install Go
 if ! command -v go &> /dev/null; then
@@ -336,7 +501,7 @@ fi
 ENDSSH
 
 echo -e "\n${YELLOW}[3/3] Installing dependencies on Client Pool...${NC}"
-ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PUBLIC} << 'ENDSSH'
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} << 'ENDSSH'
 set -e
 sudo sh -c 'printf "Acquire::ForceIPv4 \"true\";\n" > /etc/apt/apt.conf.d/99force-ipv4'
 while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 2; done
@@ -360,6 +525,23 @@ else
     echo "✓ Go already installed"
 fi
 
+# Mount /run/netns as shared for named network namespace support
+# This is required for netns.NewNamed() to work (used by orchestrator for sandbox network isolation)
+# /var/run/netns is a symlink to /run/netns
+# Make /run shared first, then mount /run/netns as shared tmpfs
+sudo mkdir -p /var/run/netns /run/netns
+sudo mount --make-shared /run 2>/dev/null || true
+sudo umount /run/netns 2>/dev/null || true
+sudo mount -t tmpfs -o shared tmpfs /run/netns || true
+
+# Grant CAP_SYS_ADMIN to unshare, bash, and ip binaries for Firecracker namespace isolation
+# This allows nomad user to:
+# - Run 'unshare -pf' and perform tmpfs mounts inside the unshare namespace
+# - Create network namespaces via Go netns.NewNamed() (which may use ip netns internally)
+sudo setcap cap_sys_admin+ep /usr/bin/unshare || true
+sudo setcap cap_sys_admin+ep /usr/bin/bash || true
+sudo setcap cap_sys_admin+ep /usr/bin/ip || true
+
 # Load NBD kernel module
 sudo modprobe nbd max_part=16 || true
 echo "✓ NBD module loaded"
@@ -368,21 +550,32 @@ echo "✓ NBD module loaded"
 sudo mkdir -p /var/e2b/templates
 sudo chown -R nomad:nomad /var/e2b
 echo "✓ Template storage directory created"
+
+# Configure iptables to allow orchestrator and template-manager gRPC ports
+# (POC explicitly uses iptables, not nftables - see POC_SUMMARY.md)
+if command -v iptables >/dev/null 2>&1; then
+  sudo iptables -I INPUT 1 -p tcp --dport 5008 -s 10.0.0.0/16 -j ACCEPT 2>/dev/null || true
+  sudo iptables -I INPUT 1 -p tcp --dport 5009 -s 10.0.0.0/16 -j ACCEPT 2>/dev/null || true
+  echo "✓ iptables rules for ports 5008/5009 added"
+fi
 ENDSSH
 
 echo -e "${GREEN}✓ Phase 1 Complete: All dependencies installed${NC}"
 
 # Stage repo contents on API & Client pools for migrations/configs
-stage_repo ${API_POOL_PUBLIC} "API Pool"
-stage_repo ${CLIENT_POOL_PUBLIC} "Client Pool"
+stage_repo ${API_TARGET} "API Pool"
+stage_repo ${CLIENT_TARGET} "Client Pool"
+
+ensure_nomad_user ${API_TARGET} "API Pool"
+ensure_nomad_user ${CLIENT_TARGET} "Client Pool"
 
 echo -e "\n${YELLOW}Ensuring Nomad agents are running...${NC}"
-ensure_consul_agent ${API_POOL_PUBLIC} "API Pool" "api"
-ensure_consul_agent ${CLIENT_POOL_PUBLIC} "Client Pool" "client"
-configure_consul_dns ${API_POOL_PUBLIC} "API Pool"
-configure_consul_dns ${CLIENT_POOL_PUBLIC} "Client Pool"
-ensure_nomad_agent ${API_POOL_PUBLIC} "API Pool" "api"
-ensure_nomad_agent ${CLIENT_POOL_PUBLIC} "Client Pool" "client"
+ensure_consul_agent ${API_TARGET} "API Pool" "api"
+ensure_consul_agent ${CLIENT_TARGET} "Client Pool" "client"
+configure_consul_dns ${API_TARGET} "API Pool"
+configure_consul_dns ${CLIENT_TARGET} "Client Pool"
+ensure_nomad_agent ${API_TARGET} "API Pool" "api"
+ensure_nomad_agent ${CLIENT_TARGET} "Client Pool" "client"
 
 # Phase 1b: Install Firecracker and Kernels
 echo -e "\n${GREEN}═══════════════════════════════════════════════════════════${NC}"
@@ -417,8 +610,9 @@ sudo chown -R nomad:nomad /var/e2b/kernels
 sudo mkdir -p /fc-versions/\${FIRECRACKER_VERSION}
 sudo install -m 0755 /usr/local/bin/firecracker /fc-versions/\${FIRECRACKER_VERSION}/firecracker
 
-sudo mkdir -p /fc-kernels/\${KERNEL_VERSION}
+sudo mkdir -p /fc-kernels/\${KERNEL_VERSION} /fc-kernels/vmlinux-\${KERNEL_VERSION}
 sudo install -m 0644 /var/e2b/kernels/vmlinux-\${KERNEL_VERSION}/vmlinux.bin /fc-kernels/\${KERNEL_VERSION}/vmlinux.bin
+sudo ln -sf /var/e2b/kernels/vmlinux-\${KERNEL_VERSION}/vmlinux.bin /fc-kernels/vmlinux-\${KERNEL_VERSION}/vmlinux.bin
 
 sudo mkdir -p /mnt/disks/fc-envs/v1
 sudo chown -R nomad:nomad /fc-kernels /fc-versions /mnt/disks/fc-envs || true
@@ -428,31 +622,21 @@ EOF
   echo "✓ Firecracker installed on ${target_label}"
 }
 
-install_firecracker ${API_POOL_PUBLIC} "API Pool"
-install_firecracker ${CLIENT_POOL_PUBLIC} "Client Pool"
+install_firecracker ${API_TARGET} "API Pool"
+install_firecracker ${CLIENT_TARGET} "Client Pool"
 
 # Phase 1c: Run database migrations
 echo -e "\n${GREEN}═══════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}Phase 1c: Running database migrations${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 
-if ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_POOL_PUBLIC} <<EOF
+if ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_TARGET} <<EOF
 set -e
 set +o history
 export POSTGRES_CONNECTION_STRING='${POSTGRES_CONNECTION_STRING}'
-# Ensure legacy 'postgres' role exists for migrations that reference it
-psql "\$POSTGRES_CONNECTION_STRING" <<'EOSQL'
-DO \$\$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'postgres') THEN
-        EXECUTE 'CREATE ROLE postgres';
-    END IF;
-END
-\$\$;
-GRANT postgres TO admin;
-EOSQL
 cd ~/e2b/packages/db
 echo "Starting migrations..."
+export PATH=\$PATH:/usr/local/go/bin
 go run ./scripts/migrator.go up
 EOF
 then
@@ -461,61 +645,141 @@ else
   echo -e "${YELLOW}⚠ Database migrations failed. Verify PostgreSQL credentials before proceeding.${NC}"
 fi
 
-# Phase 2: Upload Prebuilt Binaries
+# Phase 1d: Initialize database (seed users, teams, clusters)
 echo -e "\n${GREEN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}Phase 2: Uploading Prebuilt Binaries${NC}"
+echo -e "${GREEN}Phase 1d: Initializing database${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 
-BINARY_DIR="${ARTIFACTS_DIR}"
-if [[ ! -d "${BINARY_DIR}" ]]; then
-  echo "${RED}✗ Prebuilt binaries not found in ${BINARY_DIR}. Please run local builds first.${NC}"
+if "${SCRIPT_DIR}/scripts/run-init-db.sh"; then
+  echo "✓ Database initialized with users, teams, and cluster configuration"
+else
+  echo -e "${RED}✗ Database initialization failed.${NC}"
+  echo -e "${RED}  This is a critical step - database must be seeded before services can run.${NC}"
+  echo -e "${RED}  Check the error messages above and fix the issue before proceeding.${NC}"
   exit 1
 fi
 
-echo -e "\n${YELLOW}Uploading binaries to API pool...${NC}"
-ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_POOL_PUBLIC} "mkdir -p ~/e2b/bin && sudo chown -R ${SSH_USER}:${SSH_USER} ~/e2b"
-scp "${SSH_OPTS[@]}" ${BINARY_DIR}/e2b-api ${SSH_USER}@${API_POOL_PUBLIC}:~/e2b/bin/
-scp "${SSH_OPTS[@]}" ${BINARY_DIR}/client-proxy ${SSH_USER}@${API_POOL_PUBLIC}:~/e2b/bin/
-echo "✓ Binaries uploaded to API pool"
-
-echo -e "\n${YELLOW}Uploading binaries to Client pool...${NC}"
-ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PUBLIC} "mkdir -p ~/e2b/bin && sudo chown -R ${SSH_USER}:${SSH_USER} ~/e2b && rm -f ~/e2b/bin/template-manager"
-scp "${SSH_OPTS[@]}" ${BINARY_DIR}/orchestrator ${SSH_USER}@${CLIENT_POOL_PUBLIC}:~/e2b/bin/
-scp "${SSH_OPTS[@]}" ${BINARY_DIR}/template-manager ${SSH_USER}@${CLIENT_POOL_PUBLIC}:~/e2b/bin/
-scp "${SSH_OPTS[@]}" ${BINARY_DIR}/envd ${SSH_USER}@${CLIENT_POOL_PUBLIC}:~/e2b/bin/
-echo "✓ Binaries uploaded to Client pool"
-
-echo -e "${GREEN}✓ Phase 2 Complete: Prebuilt binaries uploaded${NC}"
-
-# Phase 3: Verify OCI Managed Services
+# Phase 2: Build Binaries on Instances
 echo -e "\n${GREEN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}Phase 3: Verifying OCI Managed Services${NC}"
+echo -e "${GREEN}Phase 2: Building Binaries on Instances${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${YELLOW}Skipping managed service connectivity checks in this environment.${NC}"
-echo -e "${GREEN}✓ Phase 3 Skipped${NC}"
 
-# Phase 4: Build Binaries on API Pool (Skipped)
-echo -e "\n${GREEN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}Phase 4: Building E2B Services on API Pool${NC}"
-echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${YELLOW}Skipping build on API pool; using uploaded binaries.${NC}"
-echo -e "${GREEN}✓ Phase 4 Complete: Prebuilt binaries in use${NC}"
+echo -e "\n${YELLOW}Building API and Client Proxy on API pool...${NC}"
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_TARGET} << 'ENDSSH'
+set -e
+export PATH=$PATH:/usr/local/go/bin
+cd ~/e2b/packages
 
-# Phase 5: Build Binaries on Client Pool (Skipped)
-echo -e "\n${GREEN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}Phase 5: Building E2B Services on Client Pool${NC}"
-echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${YELLOW}Skipping build on Client pool; using uploaded binaries.${NC}"
-echo -e "${GREEN}✓ Phase 5 Complete: Prebuilt binaries in use${NC}"
+# Build to ~/e2b/bin so Phase 4 rsync preserves them
+mkdir -p ~/e2b/bin
 
-# Phase 6: Create Configuration Files
+echo "Building API..."
+cd api
+go build -o ~/e2b/bin/e2b-api .
+echo "✓ API built"
+
+echo "Building Client Proxy..."
+cd ../client-proxy
+go build -o ~/e2b/bin/client-proxy .
+echo "✓ Client Proxy built"
+
+# Make binaries executable
+chmod +x ~/e2b/bin/*
+ENDSSH
+echo "✓ API and Client Proxy built on API pool"
+
+echo -e "\n${YELLOW}Building Orchestrator and Template Manager on Client pool...${NC}"
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} << 'ENDSSH'
+set -e
+export PATH=$PATH:/usr/local/go/bin
+cd ~/e2b/packages
+
+# Build to ~/e2b/bin so Phase 4 rsync preserves them
+mkdir -p ~/e2b/bin
+
+echo "Building Orchestrator..."
+cd orchestrator
+go build -o ~/e2b/bin/orchestrator .
+echo "✓ Orchestrator built"
+
+echo "Building Template Manager (copy of orchestrator)..."
+cp ~/e2b/bin/orchestrator ~/e2b/bin/template-manager
+echo "✓ Template Manager built"
+
+echo "Building envd..."
+cd ../envd
+
+# Ensure Go modules are downloaded
+echo "Downloading Go dependencies for envd..."
+if ! go mod download 2>&1; then
+  echo "WARNING: go mod download failed, continuing anyway..." >&2
+fi
+
+# Capture build output for debugging
+echo "Running go build..."
+BUILD_OUTPUT=$(go build -o ~/e2b/bin/envd . 2>&1)
+BUILD_EXIT=$?
+
+if [[ $BUILD_EXIT -ne 0 ]]; then
+  echo "ERROR: envd build failed with exit code $BUILD_EXIT" >&2
+  echo "Build output:" >&2
+  echo "$BUILD_OUTPUT" >&2
+  exit 1
+fi
+
+# Verify envd binary was created
+if [[ ! -f ~/e2b/bin/envd ]]; then
+  echo "ERROR: envd binary not found after build!" >&2
+  echo "Build output was:" >&2
+  echo "$BUILD_OUTPUT" >&2
+  echo "Current directory: $(pwd)" >&2
+  echo "Files in envd directory:" >&2
+  ls -la . >&2 || true
+  exit 1
+fi
+
+# Verify it's actually executable
+if [[ ! -x ~/e2b/bin/envd ]]; then
+  echo "WARNING: envd binary exists but is not executable, fixing permissions..." >&2
+  chmod +x ~/e2b/bin/envd
+fi
+
+echo "✓ envd built ($(du -h ~/e2b/bin/envd | cut -f1))"
+
+# Make all binaries executable
+chmod +x ~/e2b/bin/*
+
+# Verify all binaries exist before listing
+echo ""
+echo "Verifying all binaries exist..."
+for bin in orchestrator template-manager envd; do
+  if [[ ! -f ~/e2b/bin/$bin ]]; then
+    echo "ERROR: ~/e2b/bin/$bin not found!" >&2
+    exit 1
+  fi
+done
+
+# List contents of ~/e2b/bin for debugging
+echo ""
+echo "Contents of ~/e2b/bin:"
+ls -lah ~/e2b/bin/
+
+# Verify binaries were built with correct timestamps
+echo ""
+echo "Binary timestamps:"
+ls -lh ~/e2b/bin/orchestrator ~/e2b/bin/template-manager ~/e2b/bin/envd | awk '{print $6, $7, $8, $9}'
+ENDSSH
+echo "✓ Orchestrator, Template Manager, and envd built on Client pool"
+
+echo -e "${GREEN}✓ Phase 2 Complete: Binaries built on instances${NC}"
+
+# Phase 3: Create Configuration Files
 echo -e "\n${GREEN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}Phase 6: Creating Configuration Files${NC}"
+echo -e "${GREEN}Phase 3: Creating Configuration Files${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 
 echo -e "\n${YELLOW}Creating API service configuration...${NC}"
-ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_POOL_PUBLIC} << ENDSSH
-cat > ~/e2b/api.env <<ENDENV
+cat <<EOF | ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_TARGET} 'cat > ~/e2b/api.env'
 # PostgreSQL Configuration (OCI Database)
 POSTGRES_CONNECTION_STRING=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=require
 
@@ -537,18 +801,19 @@ SANDBOX_ACCESS_TOKEN_HASH_SEED=E2bSandboxSeed2025!
 # Template Manager
 TEMPLATE_MANAGER_HOST=template-manager.service.consul:5009
 
+# Orchestrator Configuration
+ORCHESTRATOR_PORT=5008
+
 # Consul Configuration
 CONSUL_URL=http://localhost:8500
 
 # Cloud Provider
 CLOUD_PROVIDER=oci
-ENDENV
-echo "✓ API configuration created"
-ENDSSH
+EOF
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_TARGET} 'echo "✓ API configuration created"'
 
 echo -e "\n${YELLOW}Creating Client Proxy configuration...${NC}"
-ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_POOL_PUBLIC} << ENDSSH
-cat > ~/e2b/client-proxy.env <<ENDENV
+cat <<EOF | ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_TARGET} 'cat > ~/e2b/client-proxy.env'
 # Service Configuration
 PORT=3001
 LOG_LEVEL=debug
@@ -581,13 +846,11 @@ LOKI_URL=http://loki.service.consul:3100
 # Environment
 ENVIRONMENT=dev
 CLOUD_PROVIDER=oci
-ENDENV
-echo "✓ Client Proxy configuration created"
-ENDSSH
+EOF
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_TARGET} 'echo "✓ Client Proxy configuration created"'
 
 echo -e "\n${YELLOW}Creating Orchestrator configuration...${NC}"
-ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PUBLIC} << ENDSSH
-cat > ~/e2b/orchestrator.env <<ENDENV
+cat <<EOF | ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'cat > ~/e2b/orchestrator.env'
 # Storage Configuration (Local for POC)
 STORAGE_PROVIDER=Local
 LOCAL_TEMPLATE_STORAGE_BASE_PATH=/var/e2b/templates
@@ -618,13 +881,11 @@ CLOUD_PROVIDER=oci
 
 # Allow Sandbox Internet
 ALLOW_SANDBOX_INTERNET=true
-ENDENV
-echo "✓ Orchestrator configuration created"
-ENDSSH
+EOF
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'echo "✓ Orchestrator configuration created"'
 
 echo -e "\n${YELLOW}Creating Template Manager configuration...${NC}"
-ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PUBLIC} << ENDSSH
-cat > ~/e2b/template-manager.env <<ENDENV
+cat <<EOF | ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'cat > ~/e2b/template-manager.env'
 # Storage Configuration (Local for POC)
 STORAGE_PROVIDER=Local
 LOCAL_TEMPLATE_STORAGE_BASE_PATH=/var/e2b/templates
@@ -649,19 +910,24 @@ ORCHESTRATOR_SERVICES=template-manager
 # Lock Path
 ORCHESTRATOR_LOCK_PATH=/opt/e2b/runtime/orchestrator.lock
 
-ENDENV
-echo "✓ Template Manager configuration created"
-ENDSSH
+# Consul/DNS-based service discovery for orchestrator
+CONSUL_URL=http://localhost:8500
+SERVICE_DISCOVERY_ORCHESTRATOR_PROVIDER=DNS
+SERVICE_DISCOVERY_ORCHESTRATOR_DNS_RESOLVER_ADDRESS=127.0.0.1:8600
+SERVICE_DISCOVERY_ORCHESTRATOR_DNS_QUERY=orchestrator.service.consul
 
-echo -e "${GREEN}✓ Phase 6 Complete: Configuration files created${NC}"
+EOF
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'echo "✓ Template Manager configuration created"'
 
-# Phase 7: Promote artifacts to /opt/e2b for Nomad runtime
+echo -e "${GREEN}✓ Phase 3 Complete: Configuration files created${NC}"
+
+# Phase 4: Promote artifacts to /opt/e2b for Nomad runtime
 echo -e "\n${GREEN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}Phase 7: Promoting artifacts to /opt/e2b${NC}"
+echo -e "${GREEN}Phase 4: Promoting artifacts to /opt/e2b${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 
 echo -e "\n${YELLOW}Syncing API payload to /opt/e2b...${NC}"
-ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_POOL_PUBLIC} <<'ENDSSH'
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_TARGET} <<'ENDSSH'
 set -e
 sudo mkdir -p /opt/e2b
 sudo rsync -a --delete ~/e2b/ /opt/e2b/
@@ -672,7 +938,7 @@ ENDSSH
 echo "✓ API payload ready under /opt/e2b"
 
 echo -e "\n${YELLOW}Syncing Client payload to /opt/e2b...${NC}"
-ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PUBLIC} <<'ENDSSH'
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} <<'ENDSSH'
 set -e
 sudo mkdir -p /opt/e2b
 sudo rsync -a --delete ~/e2b/ /opt/e2b/
@@ -682,23 +948,32 @@ sudo chmod -R 755 /opt/e2b
 ENDSSH
 echo "✓ Client payload ready under /opt/e2b"
 
-echo -e "${GREEN}✓ Phase 7 Complete: Runtime artifacts promoted${NC}"
+echo -e "${GREEN}✓ Phase 4 Complete: Runtime artifacts promoted${NC}"
 
-# Phase 8: Prepare Template Runtime Assets
+# Phase 5: Prepare Template Runtime Assets
 echo -e "\n${GREEN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}Phase 8: Preparing Template Runtime Assets${NC}"
+echo -e "${GREEN}Phase 5: Preparing Template Runtime Assets${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 
-ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PUBLIC} <<EOF
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} <<EOF
 set -e
 FIRECRACKER_VERSION="${FIRECRACKER_VERSION_FULL}"
 KERNEL_VERSION="${FIRECRACKER_KERNEL_VERSION}"
-sudo mkdir -p /fc-envd /fc-versions/\${FIRECRACKER_VERSION} /fc-kernels/\${KERNEL_VERSION} /mnt/disks/fc-envs/v1
+sudo mkdir -p /fc-envd /fc-versions/\${FIRECRACKER_VERSION} /fc-kernels/\${KERNEL_VERSION} /fc-kernels/vmlinux-\${KERNEL_VERSION} /mnt/disks/fc-envs/v1 /orchestrator/sandbox
+
+# Verify envd binary exists before copying
+if [[ ! -f /opt/e2b/bin/envd ]]; then
+  echo "ERROR: /opt/e2b/bin/envd not found! Build must have failed in Phase 2." >&2
+  echo "Please check the Phase 2 build logs above." >&2
+  exit 1
+fi
+
 sudo cp /opt/e2b/bin/envd /fc-envd/envd
 sudo chmod 0755 /fc-envd/envd
 sudo ln -sf /usr/local/bin/firecracker /fc-versions/\${FIRECRACKER_VERSION}/firecracker
 sudo ln -sf /var/e2b/kernels/vmlinux-\${KERNEL_VERSION}/vmlinux.bin /fc-kernels/\${KERNEL_VERSION}/vmlinux.bin
-sudo chown -R nomad:nomad /fc-envd /fc-versions /fc-kernels /mnt/disks/fc-envs || true
+sudo ln -sf /var/e2b/kernels/vmlinux-\${KERNEL_VERSION}/vmlinux.bin /fc-kernels/vmlinux-\${KERNEL_VERSION}/vmlinux.bin
+sudo chown -R nomad:nomad /fc-envd /fc-versions /fc-kernels /mnt/disks/fc-envs /orchestrator || true
 EOF
 echo "✓ Template runtime assets prepared on Client pool"
 
@@ -716,11 +991,11 @@ echo "3. Start the services"
 echo ""
 echo -e "${YELLOW}To start services manually:${NC}"
 echo ""
-echo -e "  ${BLUE}On API Pool (${API_POOL_PUBLIC}):${NC}"
+echo -e "  ${BLUE}On API Pool (${API_TARGET}):${NC}"
 echo "    cd /opt/e2b && source api.env && ./bin/e2b-api"
 echo "    cd /opt/e2b && source client-proxy.env && ./bin/client-proxy"
 echo ""
-echo -e "  ${BLUE}On Client Pool (${CLIENT_POOL_PUBLIC}):${NC}"
+echo -e "  ${BLUE}On Client Pool (${CLIENT_TARGET}):${NC}"
 echo "    cd /opt/e2b && source orchestrator.env && ./bin/orchestrator"
 echo "    cd /opt/e2b && source template-manager.env && ./bin/template-manager"
 echo ""

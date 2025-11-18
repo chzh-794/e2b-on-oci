@@ -25,11 +25,21 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
 
-const startScript = `mount --make-rprivate / &&
-mount -t tmpfs tmpfs {{ .buildDir }} -o X-mount.mkdir &&
-mount -t tmpfs tmpfs {{ .buildKernelDir }} -o X-mount.mkdir &&
-ln -s {{ .rootfsPath }} {{ .buildRootfsPath }} &&
-ln -s {{ .kernelPath }} {{ .buildKernelPath }} &&
+const startScript = `set -e
+echo "[FC START] Starting Firecracker in network namespace {{ .namespaceID }}"
+echo "[FC START] Checking namespace exists: /var/run/netns/{{ .namespaceID }}"
+ls -la /var/run/netns/{{ .namespaceID }} || (echo "[FC START] ERROR: Namespace file not found!" && exit 1)
+echo "[FC START] Listing all namespaces:"
+ip netns list || true
+echo "[FC START] Creating build directories"
+mkdir -p {{ .buildDir }} {{ .buildKernelDir }}
+echo "[FC START] Mounting tmpfs (optional)"
+mount -t tmpfs tmpfs {{ .buildDir }} -o X-mount.mkdir 2>/dev/null || true
+mount -t tmpfs tmpfs {{ .buildKernelDir }} -o X-mount.mkdir 2>/dev/null || true
+echo "[FC START] Creating symlinks"
+ln -sf {{ .rootfsPath }} {{ .buildRootfsPath }}
+ln -sf {{ .kernelPath }} {{ .buildKernelPath }}
+echo "[FC START] Executing Firecracker in namespace {{ .namespaceID }}"
 ip netns exec {{ .namespaceID }} {{ .firecrackerPath }} --api-sock {{ .firecrackerSocket }}`
 
 var startScriptTemplate = txtTemplate.Must(txtTemplate.New("fc-start").Parse(startScript))
@@ -124,7 +134,7 @@ func NewProcess(
 
 	cmd := exec.Command(
 		"unshare",
-		"-pfm",
+		"-pf",
 		"--kill-child",
 		"--",
 		"bash",

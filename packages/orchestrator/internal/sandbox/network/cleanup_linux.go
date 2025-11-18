@@ -35,6 +35,14 @@ func cleanupDanglingNamespace(slot *Slot) error {
 		}
 	}
 
+	// Close the namespace handle if it exists (e.g., if CreateNetwork() failed partway through)
+	if slot.nsHandle != 0 {
+		if closeErr := slot.nsHandle.Close(); closeErr != nil {
+			logger.Warn("failed to close namespace handle during cleanup", zap.Error(closeErr))
+		}
+		slot.nsHandle = 0
+	}
+
 	if err := netns.DeleteNamed(slot.NamespaceID()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("failed to delete dangling namespace %s: %w", slot.NamespaceID(), err)
 	}

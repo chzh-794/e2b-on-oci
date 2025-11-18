@@ -116,17 +116,33 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 
 	envdVersion, err := GetEnvdVersion(ctx)
 	if err != nil {
+		b.logger.Error("template build failed: error getting envd version",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error getting envd version: %w", err)
 	}
 
 	templateCacheFiles, err := template.NewTemplateCacheFiles()
 	if err != nil {
+		b.logger.Error("template build failed: error creating template files",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error creating template files: %w", err)
 	}
 
 	templateBuildDir := filepath.Join(templatesDirectory, template.BuildId)
 	err = os.MkdirAll(templateBuildDir, 0o777)
 	if err != nil {
+		b.logger.Error("template build failed: error creating template build directory",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.String("dir", templateBuildDir),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error creating template build directory: %w", err)
 	}
 	defer func() {
@@ -151,6 +167,11 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 		rootfsPath,
 	)
 	if err != nil {
+		b.logger.Error("template build failed: error building environment (rootfs extraction)",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error building environment: %w", err)
 	}
 
@@ -166,16 +187,35 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 	rootfsProvisionPath := filepath.Join(templateBuildDir, rootfsProvisionLink)
 	err = os.Symlink(rootfsPath, rootfsProvisionPath)
 	if err != nil {
+		b.logger.Error("template build failed: error creating provision rootfs symlink",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.String("target", rootfsPath),
+			zap.String("link", rootfsProvisionPath),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error creating provision rootfs: %w", err)
 	}
 
 	postProcessor.WriteMsg("Seeding apt package indexes")
 	if err := b.preseedAptCaches(ctx, postProcessor, rootfsPath); err != nil {
+		b.logger.Error("template build failed: error pre-seeding apt caches",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.String("rootfs_path", rootfsPath),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error pre-seeding apt caches: %w", err)
 	}
 
 	err = b.provisionSandbox(ctx, postProcessor, template, envdVersion, localTemplate, rootfsProvisionPath)
 	if err != nil {
+		b.logger.Error("template build failed: error provisioning sandbox",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.String("rootfs_path", rootfsProvisionPath),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error provisioning sandbox: %w", err)
 	}
 
@@ -194,11 +234,22 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 
 	err = b.enlargeDiskAfterProvisioning(ctx, template, rootfsPath)
 	if err != nil {
+		b.logger.Error("template build failed: error enlarging disk after provisioning",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.String("rootfs_path", rootfsPath),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error enlarging disk after provisioning: %w", err)
 	}
 
 	err = rootfs.UpdateSize()
 	if err != nil {
+		b.logger.Error("template build failed: error updating rootfs size",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error updating rootfs size: %w", err)
 	}
 
@@ -229,6 +280,12 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 		}
 	}()
 	if err != nil {
+		b.logger.Error("template build failed: error creating sandbox",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.String("rootfs_path", rootfsPath),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error creating sandbox: %w", err)
 	}
 	err = sbx.WaitForEnvd(
@@ -237,6 +294,12 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 		waitEnvdTimeout,
 	)
 	if err != nil {
+		b.logger.Error("template build failed: failed to wait for sandbox start (envd timeout)",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.Duration("timeout", waitEnvdTimeout),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("failed to wait for sandbox start: %w", err)
 	}
 	// Add to proxy so we can call envd commands
@@ -250,6 +313,11 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 	var scriptDef bytes.Buffer
 	err = ConfigureScriptTemplate.Execute(&scriptDef, map[string]string{})
 	if err != nil {
+		b.logger.Error("template build failed: error executing configuration script template",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error executing provision script: %w", err)
 	}
 
@@ -266,6 +334,12 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 		map[string]string{},
 	)
 	if err != nil {
+		b.logger.Error("template build failed: error running configuration script",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.String("sandbox_id", sbx.Metadata.Config.SandboxId),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error running configuration script: %w", err)
 	}
 
@@ -316,12 +390,24 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 		envVars,
 	)
 	if err != nil {
+		b.logger.Error("template build failed: error running ready command",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.String("sandbox_id", sbx.Metadata.Config.SandboxId),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error running ready command: %w", err)
 	}
 
 	// Wait for the start command to start executing.
 	select {
 	case <-ctx.Done():
+		b.logger.Error("template build failed: error waiting for start command (context canceled)",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.String("sandbox_id", sbx.Metadata.Config.SandboxId),
+			zap.Error(commandsCtx.Err()),
+		)
 		return nil, fmt.Errorf("error waiting for start command: %w", commandsCtx.Err())
 	case <-startCmdConfirm:
 	}
@@ -330,6 +416,13 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 	commandsCancel()
 	err = startCmd.Wait()
 	if err != nil {
+		b.logger.Error("template build failed: error running start command",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.String("sandbox_id", sbx.Metadata.Config.SandboxId),
+			zap.String("start_cmd", template.StartCmd),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error running start command: %w", err)
 	}
 
@@ -341,6 +434,12 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 		templateCacheFiles,
 	)
 	if err != nil {
+		b.logger.Error("template build failed: error pausing sandbox (snapshot creation)",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.String("sandbox_id", sbx.Metadata.Config.SandboxId),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("error processing vm: %w", err)
 	}
 
@@ -354,6 +453,11 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 
 	uploadErr := <-uploadErrCh
 	if uploadErr != nil {
+		b.logger.Error("template build failed: error uploading template",
+			zap.String("template_id", template.TemplateFiles.TemplateId),
+			zap.String("build_id", template.TemplateFiles.BuildId),
+			zap.Error(uploadErr),
+		)
 		return nil, fmt.Errorf("error uploading template: %w", uploadErr)
 	}
 

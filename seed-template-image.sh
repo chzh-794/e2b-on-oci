@@ -6,7 +6,7 @@
 # Usage:
 #   ./seed-template-image.sh --template-id <template> --build-id <uuid> \
 #     [--client-host <ip>] [--bastion-host <ip>] [--ssh-user ubuntu] \
-#     [--ssh-key ~/.ssh/id_rsa] [--context artifacts/template-images/base]
+#     [--ssh-key ~/.ssh/id_rsa] [--context <dir> | --dockerfile <content>]
 #
 # The script copies the Docker build context to the remote client host,
 # builds the image, and tags it as <template-id>:<build-id>.
@@ -14,7 +14,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_CONTEXT="${SCRIPT_DIR}/artifacts/template-images/base"
 WORK_DIR="/tmp/e2b-template-build"
 
 TEMPLATE_ID=""
@@ -23,7 +22,7 @@ CLIENT_HOST="${CLIENT_POOL_PUBLIC:-}"
 BASTION_HOST="${BASTION_HOST:-}"
 SSH_USER="${SSH_USER:-ubuntu}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa}"
-DOCKER_CONTEXT="${DEFAULT_CONTEXT}"
+DOCKER_CONTEXT=""
 
 usage() {
   cat <<EOF
@@ -38,11 +37,17 @@ Optional arguments:
   --bastion-host    Bastion public IP (defaults to \$BASTION_HOST). If empty, connect directly.
   --ssh-user        SSH username (default: ${SSH_USER})
   --ssh-key         SSH private key (default: ${SSH_KEY})
-  --context         Docker build context directory (default: ${DEFAULT_CONTEXT})
+  --context         Docker build context directory (required if not using --dockerfile)
+  --dockerfile       Dockerfile content as string (required if not using --context)
 
 Example:
   ./seed-template-image.sh --template-id base-poc --build-id 123e4567-e89b-12d3-a456-426614174000 \\
-    --client-host 10.0.2.73 --bastion-host 192.0.2.10
+    --client-host 10.0.2.73 --bastion-host 192.0.2.10 \\
+    --dockerfile "FROM ubuntu:22.04\\nRUN apt-get update && apt-get install -y python3"
+  
+  OR with a context directory:
+  ./seed-template-image.sh --template-id base-poc --build-id 123e4567-e89b-12d3-a456-426614174000 \\
+    --client-host 10.0.2.73 --context /path/to/docker/context
 EOF
   exit 1
 }
@@ -77,6 +82,10 @@ while [[ $# -gt 0 ]]; do
       DOCKER_CONTEXT="$2"
       shift 2
       ;;
+    --dockerfile)
+      DOCKERFILE="$2"
+      shift 2
+      ;;
     -*)
       echo "Unknown option: $1" >&2
       usage
@@ -98,7 +107,17 @@ if [[ -z "${CLIENT_HOST}" ]]; then
   usage
 fi
 
-if [[ ! -d "${DOCKER_CONTEXT}" ]]; then
+if [[ -z "${DOCKER_CONTEXT}" && -z "${DOCKERFILE:-}" ]]; then
+  echo "Error: Either --context or --dockerfile must be provided." >&2
+  usage
+fi
+
+if [[ -n "${DOCKER_CONTEXT}" && -n "${DOCKERFILE:-}" ]]; then
+  echo "Error: Cannot specify both --context and --dockerfile." >&2
+  usage
+fi
+
+if [[ -n "${DOCKER_CONTEXT}" && ! -d "${DOCKER_CONTEXT}" ]]; then
   echo "Error: Docker context '${DOCKER_CONTEXT}' does not exist." >&2
   exit 1
 fi
@@ -120,15 +139,26 @@ echo "Client Host : ${CLIENT_HOST}"
 if [[ -n "${BASTION_HOST}" ]]; then
   echo "Bastion     : ${BASTION_HOST}"
 fi
-echo "Context     : ${DOCKER_CONTEXT}"
+if [[ -n "${DOCKERFILE:-}" ]]; then
+  echo "Dockerfile  : (provided via --dockerfile)"
+else
+  echo "Context     : ${DOCKER_CONTEXT}"
+fi
 echo ""
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  [1/3] Copying Docker context to client"
+echo "  [1/3] Preparing Docker build context on client"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 ssh "${SSH_BASE_OPTS[@]}" "${SSH_USER}@${CLIENT_HOST}" "rm -rf '${REMOTE_PATH}' && mkdir -p '${REMOTE_PATH}'"
-scp "${SSH_BASE_OPTS[@]}" -r "${DOCKER_CONTEXT}/." "${SSH_USER}@${CLIENT_HOST}:${REMOTE_PATH}/"
+
+if [[ -n "${DOCKERFILE:-}" ]]; then
+  # Use provided Dockerfile content
+  printf '%s' "${DOCKERFILE}" | ssh "${SSH_BASE_OPTS[@]}" "${SSH_USER}@${CLIENT_HOST}" "cat > '${REMOTE_PATH}/Dockerfile'"
+else
+  # Copy context directory
+  scp "${SSH_BASE_OPTS[@]}" -r "${DOCKER_CONTEXT}/." "${SSH_USER}@${CLIENT_HOST}:${REMOTE_PATH}/"
+fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

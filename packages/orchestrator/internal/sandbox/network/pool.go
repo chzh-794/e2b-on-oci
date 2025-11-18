@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
@@ -61,7 +63,13 @@ func NewPool(ctx context.Context, meterProvider metric.MeterProvider, newSlotsPo
 		slotStorage:       slotStorage,
 	}
 
+	zap.L().Info("[network slot pool]: Initializing network pool",
+		zap.Int("new_slots_size", newSlotsPoolSize),
+		zap.Int("reused_slots_size", reusedSlotsPoolSize),
+		zap.String("client_id", clientID))
+
 	go func() {
+		zap.L().Info("[network slot pool]: Starting populate() goroutine")
 		err := pool.populate(ctx)
 		if err != nil {
 			zap.L().Fatal("error when populating network slot pool", zap.Error(err))
@@ -70,25 +78,22 @@ func NewPool(ctx context.Context, meterProvider metric.MeterProvider, newSlotsPo
 		zap.L().Info("network slot pool populate closed")
 	}()
 
+	zap.L().Info("[network slot pool]: Network pool initialized successfully")
 	return pool, nil
 }
 
-func (p *Pool) createNetworkSlot() (*Slot, error) {
-	ips, err := p.slotStorage.Acquire(p.ctx)
+func (p *Pool) acquireSlotID() (*Slot, error) {
+	zap.L().Info("[network slot pool]: Acquiring slot ID from storage")
+	slot, err := p.slotStorage.Acquire(p.ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create network: %w", err)
+		zap.L().Error("[network slot pool]: Failed to acquire slot from storage", zap.Error(err))
+		return nil, fmt.Errorf("failed to acquire slot: %w", err)
 	}
+	zap.L().Info("[network slot pool]: Slot ID acquired", zap.String("namespace", slot.NamespaceID()))
 
-	err = ips.CreateNetwork()
-	if err != nil {
-		cleanupErr := cleanupDanglingNamespace(ips)
-		releaseErr := p.slotStorage.Release(ips)
-		err = errors.Join(err, cleanupErr, releaseErr)
-
-		return nil, fmt.Errorf("failed to create network: %w", err)
-	}
-
-	return ips, nil
+	// Don't create network setup here - do it on-demand when actually needed.
+	// This prevents the cleanup timer from deleting namespaces we just created.
+	return slot, nil
 }
 
 func (p *Pool) populate(ctx context.Context) error {
@@ -100,15 +105,18 @@ func (p *Pool) populate(ctx context.Context) error {
 			// Do not return an error here, this is expected on close
 			return nil
 		default:
-			slot, err := p.createNetworkSlot()
+			zap.L().Info("[network slot pool]: populate() loop - acquiring slot ID")
+			slot, err := p.acquireSlotID()
 			if err != nil {
-				zap.L().Error("[network slot pool]: failed to create network", zap.Error(err))
+				zap.L().Error("[network slot pool]: failed to acquire slot ID in populate loop", zap.Error(err), zap.String("error_type", fmt.Sprintf("%T", err)))
 
 				continue
 			}
 
+			zap.L().Info("[network slot pool]: Successfully acquired slot ID, adding to pool", zap.String("namespace", slot.NamespaceID()))
 			p.newSlotCounter.Add(ctx, 1)
 			p.newSlots <- slot
+			zap.L().Info("[network slot pool]: Slot ID added to pool", zap.String("namespace", slot.NamespaceID()))
 		}
 	}
 }
@@ -131,6 +139,69 @@ func (p *Pool) Get(ctx context.Context, tracer trace.Tracer, allowInternet bool)
 			telemetry.ReportEvent(ctx, "new network slot")
 
 			slot = s
+		}
+	}
+
+	// Check if network setup exists. If not, create it on-demand.
+	// This is more efficient than pre-creating (which gets deleted by cleanup timer).
+	nsPath := filepath.Join("/var/run/netns", slot.NamespaceID())
+	if _, err := os.Stat(nsPath); os.IsNotExist(err) {
+		zap.L().Info("[network slot pool]: Creating network setup on-demand",
+			zap.String("namespace", slot.NamespaceID()),
+			zap.String("path", nsPath))
+
+		// Clean up any dangling resources first (veth devices, iptables rules, etc.)
+		// The handle might be open from a previous attempt, so close it first
+		if slot.nsHandle != 0 {
+			if closeErr := slot.nsHandle.Close(); closeErr != nil {
+				zap.L().Warn("[network slot pool]: Failed to close old namespace handle",
+					zap.String("namespace", slot.NamespaceID()),
+					zap.Error(closeErr))
+			}
+			slot.nsHandle = 0
+		}
+
+		// Close firewall if it exists (from previous use) before recreating network
+		// This prevents "firewall is already initialized" error when reusing slots
+		if slot.Firewall != nil {
+			if closeErr := slot.CloseFirewall(); closeErr != nil {
+				zap.L().Warn("[network slot pool]: Failed to close old firewall",
+					zap.String("namespace", slot.NamespaceID()),
+					zap.Error(closeErr))
+			}
+		}
+
+		// Clean up dangling network devices and iptables rules
+		if cleanupErr := cleanupDanglingNamespace(slot); cleanupErr != nil {
+			zap.L().Warn("[network slot pool]: Failed to cleanup dangling namespace resources",
+				zap.String("namespace", slot.NamespaceID()),
+				zap.Error(cleanupErr))
+		}
+
+		// Create the network setup now that we actually need it
+		zap.L().Info("[network slot pool]: Creating network setup for slot",
+			zap.String("namespace", slot.NamespaceID()))
+		if err := slot.CreateNetwork(); err != nil {
+			// If creation fails, clean up and return error
+			cleanupErr := cleanupDanglingNamespace(slot)
+			releaseErr := p.slotStorage.Release(slot)
+			return nil, fmt.Errorf("failed to create network for slot %s: %w (cleanup: %v, release: %v)",
+				slot.NamespaceID(), err, cleanupErr, releaseErr)
+		}
+		zap.L().Info("[network slot pool]: Successfully created network setup",
+			zap.String("namespace", slot.NamespaceID()))
+	} else if err != nil {
+		// Some other error checking the namespace file
+		return nil, fmt.Errorf("error checking namespace file %s: %w", nsPath, err)
+	} else {
+		// Namespace exists - ensure firewall is initialized if it's nil
+		// This can happen if the namespace was recreated externally or firewall was cleared
+		if slot.Firewall == nil {
+			zap.L().Info("[network slot pool]: Namespace exists but firewall is nil, initializing firewall",
+				zap.String("namespace", slot.NamespaceID()))
+			if err := slot.InitializeFirewall(); err != nil {
+				return nil, fmt.Errorf("failed to initialize firewall for existing namespace %s: %w", slot.NamespaceID(), err)
+			}
 		}
 	}
 

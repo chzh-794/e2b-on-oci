@@ -1,18 +1,7 @@
 # Project exclusions
 POC_SUMMARY.md
 COMPARISON_OCI_vs_AWS.md
-
-# POC-specific files (exclude from git)
-examples/
-demo/
-
-# POC helper scripts (in packages/)
-packages/build-all.sh
-packages/deploy.sh
-packages/*.env.example
-
-# Generated bundles
-e2b-oci-*.zip
+ops-notes.md
 
 # Deployment config (copy deploy.env.example -> deploy.env locally)
 deploy.env
@@ -20,7 +9,6 @@ api-creds.env
 
 
 # POC deployment scripts (all .sh files in root)
-*.sh
 !deploy-poc.sh
 !seed-template-image.sh
 !deploy-services.sh
@@ -58,5 +46,4 @@ Thumbs.db
 !*.key.example
 credentials.json
 secrets.yaml
-ops-notes.md
 packages/bin/

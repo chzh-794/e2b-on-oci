@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/containernetworking/plugins/pkg/ns"
+	"github.com/vishvananda/netns"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	netutils "k8s.io/utils/net"
@@ -71,6 +72,10 @@ type Slot struct {
 	hostIp   net.IP
 	hostNet  *net.IPNet
 	hostCIDR string
+
+	// nsHandle keeps the network namespace file descriptor open to prevent the namespace from being deleted.
+	// This is critical for OCI where the bind mount alone doesn't keep the namespace alive.
+	nsHandle netns.NsHandle
 }
 
 func NewSlot(key string, idx int) (*Slot, error) {

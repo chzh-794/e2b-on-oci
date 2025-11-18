@@ -36,8 +36,10 @@ DO $$
 $$;
 
 
--- Grant execute on auth.uid() to postgres role
-GRANT EXECUTE ON FUNCTION auth.uid() TO postgres;
+-- Grant execute on auth.uid() without depending on a specific superuser role.
+-- OCI PostgreSQL does not create a 'postgres' role by default; grant to PUBLIC is sufficient for POC,
+-- and avoids hard‑coding a cluster‑specific admin role name.
+GRANT EXECUTE ON FUNCTION auth.uid() TO PUBLIC;
 
 -- Check if the table exists before trying to create it
 DO $$

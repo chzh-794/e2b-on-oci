@@ -23,18 +23,17 @@ job "orchestrator" {
       port = "orchestrator"
 
       check {
-        type         = "grpc"
+        type         = "tcp"
         name         = "health"
         interval     = "20s"
         timeout      = "5s"
-        grpc_use_tls = false
         port         = "orchestrator"
       }
     }
 
     task "orchestrator" {
       driver = "raw_exec"
-      user   = "root"
+      # user = "root"  # Removed: AWS doesn't specify user, let it default to Nomad agent user
 
       resources {
         memory = 2048

@@ -9,29 +9,27 @@ e2b-on-oci/
 ├── terraform-base/        # Networking, bastion, IAM policies, object storage buckets, managed PostgreSQL/Redis (Stack 1)
 ├── terraform-cluster/     # Nomad/Consul/API/client pools (Stack 2)
 ├── packages/              # Source code for API, orchestrator, client-proxy, template-manager, envd, shared libs
-├── artifacts/bin/         # Prebuilt Linux AMD64 binaries uploaded by deploy-poc.sh
 ├── nomad/                 # Nomad job definitions (api.hcl, orchestrator.hcl, client-proxy.hcl, template-manager.hcl)
 ├── deploy-poc.sh          # Provisioning script that pushes binaries/configs and installs dependencies
 ├── deploy-services.sh     # Registers Nomad jobs after deploy-poc.sh finishes
 ├── db/                    # init-db.sh + SQL seeds/migrations for the managed PostgreSQL instance
-├── examples/              # Demo scripts for exercising the API/sandbox lifecycle
 ├── deploy.env.example     # Template for the local deployment config (copy to deploy.env, ignored by git)
 └── README.md              # This runbook
 ```
 
 - **terraform-base** and **terraform-cluster** remain separate stacks so you can iterate on cluster resources without recreating networking/DB resources. Zip each folder to produce `e2b-oci-stack.zip` (base) and `e2b-oci-cluster.zip` (cluster).
-- **packages/** mirrors the AWS repo; build binaries with `GOOS=linux GOARCH=amd64` and drop them into `artifacts/bin/` so `deploy-poc.sh` can upload them.
+- **packages/** source code is staged to instances and built directly on the target hosts (no cross-compilation needed).
 - **deploy-poc.sh** reads `deploy.env`, connects through the bastion, installs dependencies, uploads env files/binaries, and downloads Firecracker assets.
 - **terraform-cluster** user-data now enables the `e2b-cleanup-network.timer` on the client pool, which runs every minute to delete idle `ns-*` namespaces and detach orphaned `nbd` devices so template builds never exhaust the slot pool.
 - **deploy-services.sh** copies the Nomad job files and runs `nomad job run` for orchestrator, API, client-proxy, and template-manager.
-- **db/init-db.sh** seeds the managed PostgreSQL instance (schema + API keys). Run it before API validation.
-- **deploy.env.example** documents every value the scripts need (bastion IP, pool IPs, PostgreSQL host, artifacts path). Copy it to `deploy.env` (ignored by git) and fill it in using the OCI Console outputs.
+- **db/init-db.sh** seeds the managed PostgreSQL instance (schema + API keys). Automatically called by `deploy-poc.sh` Phase 1d.
+- **deploy.env.example** documents every value the scripts need (bastion IP, pool IPs, PostgreSQL host). Copy it to `deploy.env` (ignored by git) and fill it in using the OCI Console outputs.
 
 ## Quickstart Overview
 
 1. **Package Terraform** – upload the base and cluster stacks to OCI Resource Manager.
 2. **Apply Terraform** – provision OCI networking, IAM policies, managed services, and bring up the Nomad/Consul server/API/client pools.
-3. **Stage Runtime Artifacts** – copy the prebuilt binaries, kernels, and configuration to the instances.
+3. **Build Binaries & Stage Runtime Assets** – build binaries on instances and stage kernels and configuration.
 4. **Register Nomad Jobs** – launch the orchestrator, API, client-proxy, and template-manager.
 5. **Initialize PostgreSQL** – load schema and seeds required for the API to authorize requests.
 6. **Smoke Test the API** – confirm health endpoints and a template flow from your workstation.
@@ -43,22 +41,22 @@ The sections below expand each step in detail.
 - macOS or Linux workstation with `zip`, `ssh`, and `scp`.
 - Access to the OCI tenancy (Resource Manager + Compute).
 - OCI command-line configured locally **or** access to the bastion host created by `terraform-base`.
-- Service binaries cross-compiled for Linux and staged under `artifacts/bin/`.
+- Go 1.21+ installed on API and Client pool instances (installed automatically by `deploy-poc.sh`).
 - Ability to reach the upstream Firecracker release buckets (used by the provisioning script to fetch kernels and the `firecracker` binary).
 
-### Artifact checklist
+### Build Process
 
-Before you run any deployment scripts, confirm the following files exist:
+Binaries are built directly on the target instances during `deploy-poc.sh` Phase 2:
+- **API and Client Proxy** are built on the API pool
+- **Orchestrator, Template Manager, and envd** are built on the Client pool
 
-| Component | Expected location | Notes |
-|-----------|-------------------|-------|
-| `e2b-api` | `artifacts/bin/e2b-api` | Build from `packages/api` using `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o ../../artifacts/bin/e2b-api .` |
-| `client-proxy` | `artifacts/bin/client-proxy` | Build from `packages/client-proxy` with the same cross-compile flags. |
-| `orchestrator` | `artifacts/bin/orchestrator` | Build from `packages/orchestrator`. |
-| `template-manager` | `artifacts/bin/template-manager` | Build from `packages/template-manager`. |
-| `envd` | `artifacts/bin/envd` | Build from `packages/envd`. |
+**Important:** The build process uses your **local repository** (not GitHub). `deploy-poc.sh` Phase 1 stages your local repo to the instances, then Phase 2 builds from that staged code. This means:
+- Any local code changes (uncommitted or committed) are included in the build
+- No cross-compilation needed (builds natively on Linux)
+- Binaries match the target environment exactly
+- Go 1.21+ is automatically installed on both pools if not already present
 
-All binaries **must** be Linux AMD64 executables. The provisioning script aborts if any entry is missing.
+If you make code changes, simply run `deploy-poc.sh` again - it will stage the updated code and rebuild binaries automatically.
 
 You do **not** need to copy Firecracker kernels or versions into the repo. During deployment `deploy-poc.sh` downloads:
 
@@ -109,7 +107,6 @@ All steps below run from your workstation inside `e2b-on-oci/`.
    - `SSH_USER` remains `ubuntu` for the OCI images we ship (override only if you customized the image).
    - `BASTION_HOST`, `SERVER_POOL_*`, `API_POOL_*`, `CLIENT_POOL_*`: open the OCI Console → **Compute → Instances**, select the compartment you targeted with Terraform, and copy each instance’s public/private IP from the table.
    - `POSTGRES_HOST`: OCI Console → **Oracle Database → PostgreSQL**, select the DB system created by `terraform-base`, and copy its hostname (format `primary.<hash>.postgresql.<region>.oci.oraclecloud.com`).
-   - `ARTIFACTS_DIR` can stay at `artifacts/bin` unless you moved the prebuilt binaries elsewhere.
    - Redis settings are optional—the client-proxy uses an in-memory catalog in this POC, so you can leave `REDIS_ENDPOINT` unset unless you explicitly point at the managed Redis cluster.
 3. `deploy-poc.sh` and `deploy-services.sh` automatically source `deploy.env`, so once the file is filled out you can run the scripts without additional prompts.
 
@@ -119,28 +116,35 @@ All steps below run from your workstation inside `e2b-on-oci/`.
    ```
    From there you can jump to the private nodes using the IPs provided by Terraform.
 
-2. Execute the provisioning script which **syncs this repo to the API/client pools**, uploads binaries, fetches Firecracker assets, and configures directories on both hosts:
+2. Execute the provisioning script which **syncs this repo to the API/client pools**, builds binaries, fetches Firecracker assets, configures directories, and initializes the database:
    ```bash
    ./deploy-poc.sh
    ```
-   - `deploy-poc.sh` now rsyncs the workstation repository (excluding `.git`, zip archives, and `artifacts/bin/`) into `~/e2b` on both the API and client pools before migrations run. All database migrations therefore execute from the freshly synced `packages/db/` directory—no manual `scp` is required.
-   - The script prompts for the bastion IP and uses the binaries you staged under `artifacts/bin/`. It also downloads the Firecracker release specified in `deploy-poc.sh` so no manual kernel copy is required.
+   - `deploy-poc.sh` stages the workstation repository (excluding `.git` and zip archives) into `~/e2b` on both the API and client pools before migrations run. All database migrations therefore execute from the freshly synced `packages/db/` directory—no manual `scp` is required.
+   - Binaries are built directly on the instances during Phase 2 (see Build Process section above). The script also downloads the Firecracker release specified in `deploy-poc.sh` so no manual kernel copy is required.
+   - **Phase 1d automatically initializes the database** (runs migrations, seeds users/teams, and configures cluster settings). The script will **fail with an error** if database initialization fails, ensuring issues are caught immediately.
 
-### Quick cluster sanity check (re-run after services)
+### Pre-Deployment Validation
 
-After `deploy-poc.sh` completes (and before pushing Nomad jobs), run the validation helper. It reuses `deploy.env` to SSH via the bastion, checks Nomad/Consul membership, verifies Docker/Firecracker assets on the client pool, curls the API & client-proxy `/health` endpoints, and confirms the API node can reach PostgreSQL.
+After `deploy-poc.sh` completes (and before pushing Nomad jobs), run the pre-deployment validation script. It verifies binaries, configuration, node classes, infrastructure health, database initialization, and service readiness.
 
 ```bash
-./scripts/check-cluster.sh
+./scripts/check-pre-deploy.sh
 ```
 
-> The script emits warnings if SSH host keys changed—clear stale entries with `ssh-keygen -R <private-ip>` as needed. It also requires `jq` on your workstation for the Consul catalog summary.
+The script performs comprehensive pre-deployment checks:
+- **Binaries**: Verifies required binaries exist on API and client pools (including `envd`)
+- **Configuration**: Checks environment files and Nomad client configuration (`no_cgroups`, `node_class` in config files)
+- **Infrastructure**: Nomad server health, Consul cluster membership
+- **Database**: Validates database connectivity, initialization status, team/cluster configuration
+- **Client Pool Readiness**: Docker service, template directories, Firecracker kernels
+- **Nomad Client Service**: Verifies Nomad client service is active
+- **Summary**: Provides a clear pass/fail summary with counts and specific failed/warned items
+
+> The script emits warnings if SSH host keys changed—clear stale entries with `ssh-keygen -R <private-ip>` as needed. It also requires `jq` on your workstation for parsing JSON responses.
 >
-> When you run it **before** `deploy-services.sh`, the API/client-proxy processes are not yet running, so the curls will print the friendly fallback messages (`API not started yet`, `Client proxy not started yet`) instead of failing the script.
+> This script only checks infrastructure and configuration that exists **before** services are deployed. For service health, template builders, Consul agent health, and Nomad job status, run `check-post-deploy.sh` after `deploy-services.sh`.
 
-> The script is idempotent—run it immediately after `deploy-services.sh` as well to make sure the Nomad jobs stayed healthy. Because it already curls `http://127.0.0.1:50001/health` and `http://127.0.0.1:3001/health` on the API host, you get API/client-proxy validation for free. The client-proxy `/health` endpoint will report `unhealthy` (and you will see `dial tcp 127.0.0.1:4317: connect: connection refused` in the logs) as long as OTEL/Loki are disabled; this is expected until we deploy those collectors or clear the env vars that point to them.
-
-By default the script writes `client-proxy.env` with `REDIS_URL=` (empty) and `USE_CATALOG_RESOLUTION=true`, which lets the sandbox catalog run entirely in-memory on a single client-proxy node. If you later wire up a TLS-enabled Redis cache, populate `REDIS_URL` before re-running the script so that catalog entries persist across restarts.
 
 ## 4. Register Nomad Jobs
 
@@ -148,48 +152,40 @@ After `deploy-poc.sh` finishes, push the service jobs into the Nomad cluster:
 
 ```bash
 ./deploy-services.sh
-./scripts/check-cluster.sh   # verify Nomad, Consul, and health endpoints
+./scripts/check-post-deploy.sh    # comprehensive post-deployment verification
 ```
 
-This script copies the job specifications to the server pool, runs `nomad job run` for orchestrator, api, client-proxy, and template-manager, and then runs a basic `nomad status` check.
+`deploy-services.sh` copies the job specifications to the server pool, runs `nomad job run` for orchestrator, api, client-proxy, and template-manager, and then prints a **summary for all four critical jobs**. It exits with code 1 if any of them has no running allocations so you can fail fast.
 
-## 5. Initialize the Database (rerun only if needed)
+**After successful deployment, `deploy-services.sh` automatically exports API credentials** to `api-creds.env` (required for validation scripts). If credential export fails (e.g., database not ready), it shows a warning but doesn't fail the deployment.
 
-`deploy-poc.sh` already runs the database migrations/seed step during **Phase 1c**, so on a fresh deployment you can move on to the next section. Keep this helper handy in case you tear down the DB, change credentials, or need to reapply the schema manually:
+`scripts/check-post-deploy.sh` performs comprehensive post-deployment verification:
+- **Critical Nomad Jobs**: Verifies `orchestrator`, `template-manager`, `api`, and `client-proxy` all have running allocations
+- **Service Health**: Checks API and Client Proxy health endpoints
+- **Node Class Validation**: Ensures node classes are correctly set (required for job placement)
+- **Infrastructure**: Nomad server health, Consul service discovery and agent health, PostgreSQL connectivity
+- **Consul Health**: Verifies Consul agents are healthy on both API and client pools
+- **Node Status**: Shows all Nomad nodes with their classes and status
+- **Template Builders**: Checks for available template builders (requires `api-creds.env`, automatically exported by `deploy-services.sh`)
+- **Summary**: Provides a clear pass/fail summary with counts and specific failed/warned items
 
-```bash
-./scripts/run-init-db.sh
-```
+The script exits with code 1 if any critical job is unhealthy, making it suitable for CI/CD pipelines.
 
-This uses the values from `deploy.env`, runs `/opt/e2b/db/init-db.sh` on the API pool (which can reach the private PostgreSQL endpoint), and applies the schema plus seed data. Update `deploy.env` if your database endpoint or credentials differ from the defaults in `terraform-base`.
+## 5. Run & Validate the API
 
-### API credentials
-
-The seed creates both the **team API key** (`e2b_…`) and the **admin API token** (`sk_e2b_…`). Fetch them directly from PostgreSQL (run the commands below from your workstation; they jump through the bastion to the API node and use the values already present in `deploy.env`):
-
-Run the helper script to pull them out of PostgreSQL (it reuses `deploy.env` for all connection settings and stores the result in `api-creds.env`, which is git-ignored):
-
-```bash
-./scripts/export-api-creds.sh
-set -a; source api-creds.env; set +a
-```
-
-All authenticated requests therefore include **both** headers:
-
-- `X-API-Key: ${TEAM_API_KEY}` (team-scoped key)
-- `Authorization: Bearer ${ADMIN_API_TOKEN}` (admin token)
-
-This mirrors the production posture and keeps the client-proxy catalog APIs unlocked.
-
-## 6. Run & Validate the API
-
-> **Automation first:** Once `deploy.env`, `api-creds.env`, and at least one template exist, you can run the helper below to perform the entire validation flow (health checks → sandbox CRUD → hello-world exec → cleanup) automatically via the bastion. Set `VALIDATION_TEMPLATE_ID=<template-id>` (and optionally `VALIDATION_TEMPLATE_ALIAS`) in `deploy.env` if you want to pin a specific template.
+> **Automation first:** After `deploy-services.sh` completes, `api-creds.env` is automatically available (exported during deployment). You can immediately run the validation script to perform the entire validation flow (health checks → sandbox CRUD → hello-world exec → cleanup) automatically via the bastion:
 >
 > ```bash
 > ./scripts/validate-api.sh
 > ```
 >
-> The script consumes a pre-built template—the same artifacts the template-manager leaves under `/var/e2b/templates/<template-id>/...` on the client pool. If you need to rebuild a template, follow the manual instructions below (curl commands + `seed-template-image.sh`), then rerun the helper to exercise sandbox CRUD/exec.
+> The script consumes a pre-built template—the same artifacts the template-manager leaves under `/var/e2b/templates/<template-id>/...` on the client pool. Set `VALIDATION_TEMPLATE_ID=<template-id>` (and optionally `VALIDATION_TEMPLATE_ALIAS`) in `deploy.env` if you want to pin a specific template. The script automatically builds a fresh template if none is specified.
+>
+> **Note:** All authenticated API requests require both headers:
+> - `X-API-Key: ${TEAM_API_KEY}` (team-scoped key, format: `e2b_…`)
+> - `Authorization: Bearer ${ADMIN_API_TOKEN}` (admin token, format: `sk_e2b_…`)
+>
+> If you need to manually export credentials (e.g., after re-initializing the database), run: `./scripts/export-api-creds.sh`
 
 With Nomad jobs running and the database initialized, the API is immediately reachable from the private subnet and via the bastion.
 
@@ -217,11 +213,32 @@ With Nomad jobs running and the database initialized, the API is immediately rea
        http://127.0.0.1:50001/templates"
    ```
 
+   This creates a template and returns a `templateID` and `buildID`. Before triggering the build, you need to seed the Docker image on the client pool using `seed-template-image.sh`:
+
+   ```bash
+   ./seed-template-image.sh \
+     --template-id <template-id> \
+     --build-id <build-id> \
+     --client-host <client-pool-ip> \
+     --bastion-host <bastion-ip> \
+     --dockerfile "FROM ubuntu:22.04\nRUN echo hello > /hello.txt"
+   ```
+
+   Then trigger the build:
+
+   ```bash
+   ssh -J ubuntu@<bastion-ip> ubuntu@<api-pool-ip> \
+     "curl -sf -X POST -H 'X-API-Key: ${E2B_API_KEY}' \
+       http://127.0.0.1:50001/templates/<template-id>/builds/<build-id>"
+   ```
+
    Template-manager logs on the client pool (`nomad alloc logs -stderr <alloc> template-manager`) should show the build progressing to completion.
+
+   **Note:** The `validate-api.sh` script automatically handles template building and seeding, so manual use of `seed-template-image.sh` is only needed for custom template builds outside of validation.
 
 4. **Expose the API publicly (optional)** by creating an SSH tunnel:
 
-   ```bash
+```bash
    ssh -i ~/.ssh/<key> -L 50001:<api-pool-ip>:50001 ubuntu@<bastion-ip>
    ```
 
@@ -278,34 +295,27 @@ These steps prove CRUD + execution parity with the AWS flow.
 
 > **Snapshot storage:** Every template build leaves its artifacts (rootfs, snapshots, Firecracker metadata) on the client pool under `/var/e2b/templates/<template-id>/...`. Subsequent sandbox creates pull directly from those local assets, so there is no need to rebuild unless you change the template.
 
-## 8. Validation Checklist
+## 8. Validation
 
-1. Verify Nomad cluster health (from the bastion, via SSH jump to a server node):
-   ```bash
-   ssh -J ubuntu@<bastion-ip> ubuntu@<server-ip> 'nomad status'
-   ```
-2. Confirm the orchestrator and template-manager allocations are `running` and the API/client-proxy jobs are healthy:
-   ```bash
-   ssh -J ubuntu@<bastion-ip> ubuntu@<server-ip> 'nomad status orchestrator'
-   ssh -J ubuntu@<bastion-ip> ubuntu@<server-ip> 'nomad status template-manager'
-   ```
-3. Check service health endpoints from the API node:
-   ```bash
-   ssh -J ubuntu@<bastion-ip> ubuntu@<api-pool-ip> 'curl -sS http://127.0.0.1:50001/health'
-   ssh -J ubuntu@<bastion-ip> ubuntu@<api-pool-ip> 'curl -sS http://127.0.0.1:3001/health'
-   ```
-4. Ensure the local template storage mount exists on the client pool:
-   ```bash
-   ssh -J ubuntu@<bastion-ip> ubuntu@<client-pool-ip> 'ls -ld /var/e2b/templates'
-   ```
-5. Confirm the latest template build snapshot artifacts:
-   ```bash
-   ssh -J ubuntu@<bastion-ip> ubuntu@<client-pool-ip> 'ls -lh /var/e2b/templates/<build-id>'
-   ```
+All validation is automated via the check scripts:
 
-If all checks succeed, the environment is ready for API- and template-pipeline validation.
+- **Pre-deployment**: Run `./scripts/check-pre-deploy.sh` after `deploy-poc.sh` to verify infrastructure, binaries, configuration, and database initialization.
+- **Post-deployment**: Run `./scripts/check-post-deploy.sh` after `deploy-services.sh` to verify Nomad jobs, service health, Consul agents, and template builders.
+- **API validation**: Run `./scripts/validate-api.sh` to perform end-to-end API validation (template builds, sandbox CRUD, execution).
 
-## 9. Capture a Firecracker Snapshot (Optional)
+These scripts provide comprehensive validation with clear pass/fail summaries. Manual validation steps are no longer needed.
+
+## 9. Optional: Manual Verification
+
+If you need to manually verify specific aspects, you can use the same commands that the check scripts use:
+
+- **Nomad job status**: `ssh -J ubuntu@<bastion-ip> ubuntu@<server-ip> 'nomad status <job-name>'`
+- **Service health**: `ssh -J ubuntu@<bastion-ip> ubuntu@<api-pool-ip> 'curl -sS http://127.0.0.1:50001/health'`
+- **Template storage**: `ssh -J ubuntu@<bastion-ip> ubuntu@<client-pool-ip> 'ls -ld /var/e2b/templates'`
+
+However, the automated check scripts (`check-pre-deploy.sh` and `check-post-deploy.sh`) cover all these checks comprehensively.
+
+## 10. Capture a Firecracker Snapshot (Optional)
 
 Once the services are up you can generate a reusable Firecracker snapshot for faster cold-starts. The high-level flow is:
 

@@ -36,6 +36,7 @@ job "template-manager" {
 
     task "template-manager" {
       driver = "raw_exec"
+      # user = "root"  # Removed: AWS doesn't specify user, let it default to Nomad agent user
 
       resources {
         memory = 4096
@@ -43,7 +44,7 @@ job "template-manager" {
       }
 
       env {
-        NODE_ID                          = "$${node.unique.name}"
+        NODE_ID                          = "$${node.unique.id}"
         STORAGE_PROVIDER                 = "Local"
         LOCAL_TEMPLATE_STORAGE_BASE_PATH = "/var/e2b/templates"
         TEMPLATE_BUCKET_NAME             = "local"

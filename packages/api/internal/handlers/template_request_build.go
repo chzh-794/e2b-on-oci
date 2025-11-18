@@ -240,22 +240,19 @@ func (a *APIStore) TemplateRequestBuild(c *gin.Context, templateID api.TemplateI
 	}
 
 	var builderNodeID *string
+	// Try to get cluster template builder if team has ClusterID, but allow fallback to local template manager
 	if team.ClusterID != nil {
 		cluster, found := a.clustersPool.GetClusterById(*team.ClusterID)
-		if !found {
-			a.sendAPIStoreError(c, http.StatusBadRequest, fmt.Sprintf("Cluster with ID '%s' not found", *team.ClusterID))
-			telemetry.ReportCriticalError(ctx, "cluster not found", fmt.Errorf("cluster with ID '%s' not found", *team.ClusterID), telemetry.WithTemplateID(templateID))
-			return nil
+		if found {
+			clusterNode, err := cluster.GetAvailableTemplateBuilder(ctx)
+			if err == nil {
+				// Cluster template builder available, use it
+				builderNodeID = &clusterNode.NodeID
+			}
+			// If no cluster template builder available, builderNodeID stays nil
+			// This allows fallback to local template manager (see template_manager.go getBuilderClient)
 		}
-
-		clusterNode, err := cluster.GetAvailableTemplateBuilder(ctx)
-		if err != nil {
-			a.sendAPIStoreError(c, http.StatusInternalServerError, fmt.Sprintf("Error when getting available template builder: %s", err))
-			telemetry.ReportCriticalError(ctx, "error when getting available template builder", err, telemetry.WithTemplateID(templateID))
-			return nil
-		}
-
-		builderNodeID = &clusterNode.NodeID
+		// If cluster not found, builderNodeID stays nil (fallback to local template manager)
 	}
 
 	// Insert the new build

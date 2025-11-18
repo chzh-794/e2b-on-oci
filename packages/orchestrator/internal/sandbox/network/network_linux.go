@@ -44,7 +44,10 @@ func (s *Slot) CreateNetwork() error {
 		return fmt.Errorf("cannot create new namespace: %w", err)
 	}
 
-	defer ns.Close()
+	// Store the namespace handle in the Slot to keep it alive.
+	// DO NOT close it here - it will be closed in RemoveNetwork() when the slot is released.
+	// This prevents the namespace from being deleted prematurely in OCI.
+	s.nsHandle = ns
 
 	// Create the Veth and Vpeer
 	vethAttrs := netlink.NewLinkAttrs()
@@ -284,6 +287,16 @@ func (s *Slot) RemoveNetwork() error {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("error deleting veth device: %w", err))
 		}
+	}
+
+	// Close the namespace handle before deleting the namespace
+	// This ensures the FD is closed before we try to delete the namespace
+	if s.nsHandle != 0 {
+		err = s.nsHandle.Close()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("error closing namespace handle: %w", err))
+		}
+		s.nsHandle = 0
 	}
 
 	err = netns.DeleteNamed(s.NamespaceID())

@@ -179,8 +179,26 @@ func CreateSandbox(
 
 	ips := <-ipsCh
 	if ips.err != nil {
-		return nil, cleanup, fmt.Errorf("failed to get network slot: %w", err)
+		zap.L().Error("Failed to get network slot from channel", zap.Error(ips.err))
+		return nil, cleanup, fmt.Errorf("failed to get network slot: %w", ips.err)
 	}
+	zap.L().Info("Network slot acquired successfully", 
+		zap.String("namespace", ips.slot.NamespaceID()),
+		zap.String("sandbox_id", config.SandboxId))
+	
+	// Verify namespace file exists before creating Firecracker process
+	nsPath := fmt.Sprintf("/var/run/netns/%s", ips.slot.NamespaceID())
+	if _, err := os.Stat(nsPath); err != nil {
+		zap.L().Error("Namespace file missing before Firecracker creation", 
+			zap.String("namespace", ips.slot.NamespaceID()),
+			zap.String("path", nsPath),
+			zap.Error(err))
+		return nil, cleanup, fmt.Errorf("namespace file not found: %s: %w", nsPath, err)
+	}
+	zap.L().Info("Namespace file verified before Firecracker creation", 
+		zap.String("namespace", ips.slot.NamespaceID()),
+		zap.String("path", nsPath))
+	
 	fcHandle, err := fc.NewProcess(
 		childCtx,
 		tracer,
@@ -248,14 +266,14 @@ func CreateSandbox(
 	})
 
 	if !processOptions.SkipWaitForEnvd {
-		// Wait for envd to be ready (same as ResumeSandbox)
-		err = sbx.WaitForEnvd(
-			ctx,
-			tracer,
-			defaultEnvdTimeout,
-		)
-		if err != nil {
-			return nil, cleanup, fmt.Errorf("failed to wait for envd start: %w", err)
+	// Wait for envd to be ready (same as ResumeSandbox)
+	err = sbx.WaitForEnvd(
+		ctx,
+		tracer,
+		defaultEnvdTimeout,
+	)
+	if err != nil {
+		return nil, cleanup, fmt.Errorf("failed to wait for envd start: %w", err)
 		}
 	}
 
