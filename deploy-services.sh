@@ -86,22 +86,56 @@ if [[ -z "${NOMAD_BIN_REMOTE}" ]] || [[ "${NOMAD_BIN_REMOTE}" == "/usr/bin/which
 fi
 NOMAD_ADDR_REMOTE="http://${SERVER_POOL_PRIVATE}:4646"
 
-# Clear orchestrator lock file on client pool before redeploying
+ssh "${BASTION_SSH_OPTS[@]}" ${SSH_USER}@${BASTION_HOST} <<EOF
+export NOMAD_BIN="${NOMAD_BIN_REMOTE}"
+export NOMAD_ADDR="${NOMAD_ADDR_REMOTE}"
+cd ~/nomad
+# Always stop-purge-run to ensure clean state and pick up new binaries, config, and infrastructure changes
+# Stop job first to allow graceful shutdown (which removes lock file)
+if \$NOMAD_BIN job status orchestrator >/dev/null 2>&1; then
+  echo "Stopping and purging existing orchestrator job..."
+  \$NOMAD_BIN job stop -purge orchestrator || true
+  sleep 3
+fi
+EOF
+
+# Clear orchestrator lock file AFTER stopping job (safety measure for crashed processes)
+# Lock file is removed on graceful shutdown, but persists if orchestrator crashed
+# Also ensure root is in disk,kvm groups for NBD device access (POC fix from POC_SUMMARY.md)
+# IMPORTANT: Nomad raw_exec driver doesn't pass through supplementary groups, so we create
+# a wrapper script that explicitly sets groups using 'sg' command
 if [[ -n "${CLIENT_POOL_PRIVATE}" ]]; then
-  echo "Clearing orchestrator lock file on client pool..."
-  ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PRIVATE} "sudo rm -f /opt/e2b/runtime/orchestrator.lock && echo 'Lock file cleared'" || true
+  echo "Clearing orchestrator lock file and ensuring NBD device access on client pool..."
+  ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PRIVATE} <<'ENDSSH'
+    sudo rm -f /opt/e2b/runtime/orchestrator.lock && echo 'Lock file cleared' || true
+    # Add root (Nomad agent user) to disk and kvm groups for NBD device access
+    # This is required for orchestrator to access /dev/nbd* devices in Nomad raw_exec allocations
+    # POC fix from POC_SUMMARY.md section "### 5. NBD Device Permissions"
+    sudo usermod -a -G disk,kvm root || true
+    echo 'NBD device access configured'
+    # Create wrapper script that runs orchestrator with proper groups
+    # Nomad raw_exec doesn't pass through supplementary groups, so we use 'sg' to switch groups
+    sudo tee /opt/e2b/bin/orchestrator-wrapper.sh >/dev/null <<'WRAPPER'
+#!/bin/bash
+# Wrapper script to run orchestrator with disk/kvm groups
+# Nomad raw_exec driver doesn't pass through supplementary groups, so we use 'sg' to switch
+cd /opt/e2b
+set -a
+source orchestrator.env
+set +a
+# Use 'sg' to switch to disk group (which has access to /dev/nbd* devices)
+# The -c flag runs the command in a new shell with the specified group
+exec sg disk -c "./bin/orchestrator --port 5008 --proxy-port 5007"
+WRAPPER
+    sudo chmod +x /opt/e2b/bin/orchestrator-wrapper.sh
+    echo 'Orchestrator wrapper script created'
+ENDSSH
 fi
 
 ssh "${BASTION_SSH_OPTS[@]}" ${SSH_USER}@${BASTION_HOST} <<EOF
 export NOMAD_BIN="${NOMAD_BIN_REMOTE}"
 export NOMAD_ADDR="${NOMAD_ADDR_REMOTE}"
 cd ~/nomad
-# Always stop-purge-run to ensure clean state and pick up new binaries, config, and infrastructure changes
-if \$NOMAD_BIN job status orchestrator >/dev/null 2>&1; then
-  echo "Stopping and purging existing orchestrator job..."
-  \$NOMAD_BIN job stop -purge orchestrator || true
-  sleep 2
-fi
 echo "Deploying orchestrator job..."
 \$NOMAD_BIN job run orchestrator.hcl
 sleep 3
@@ -112,26 +146,101 @@ EOF
 echo -e "${GREEN}✓ Orchestrator deployed${NC}"
 echo ""
 
-# Deploy Template Manager
-echo -e "${GREEN}Step 2: Deploying Template Manager${NC}"
+# Deploy Template Manager (as systemd service to bypass Nomad loop device restrictions)
+echo -e "${GREEN}Step 2: Deploying Template Manager (systemd service)${NC}"
+if [[ -z "${CLIENT_POOL_PRIVATE}" ]]; then
+  echo -e "${RED}Error: CLIENT_POOL_PRIVATE must be set in deploy.env${NC}" >&2
+  exit 1
+fi
+
+# Stop and purge Nomad job if it exists (template-manager now runs as systemd service)
+# This ensures no conflicts between Nomad job and systemd service
 ssh "${BASTION_SSH_OPTS[@]}" ${SSH_USER}@${BASTION_HOST} <<EOF
 export NOMAD_BIN="${NOMAD_BIN_REMOTE}"
 export NOMAD_ADDR="${NOMAD_ADDR_REMOTE}"
-cd ~/nomad
-# Always stop-purge-run to ensure clean state and pick up new binaries, config, and infrastructure changes (e.g., disk group for loop devices)
 if \$NOMAD_BIN job status template-manager >/dev/null 2>&1; then
-  echo "Stopping and purging existing template-manager job..."
+  echo "Stopping and purging existing template-manager Nomad job (now using systemd service)..."
   \$NOMAD_BIN job stop -purge template-manager || true
   sleep 2
+  # Verify job is purged
+  if \$NOMAD_BIN job status template-manager >/dev/null 2>&1; then
+    echo "Warning: template-manager Nomad job still exists after purge attempt" >&2
+  else
+    echo "✓ template-manager Nomad job purged successfully"
+  fi
 fi
-echo "Deploying template-manager job..."
-\$NOMAD_BIN job run template-manager.hcl
-sleep 3
-echo ""
-echo "Template Manager deployment status:"
-\$NOMAD_BIN job status template-manager
 EOF
-echo -e "${GREEN}✓ Template Manager deployed${NC}"
+
+# Install and start systemd service on client pool
+echo "Installing template-manager systemd service on client pool..."
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_POOL_PRIVATE} <<'EOF'
+set -e
+# Install systemd service file (idempotent - safe to run multiple times)
+sudo mkdir -p /etc/systemd/system
+cat <<'SERVICE' | sudo tee /etc/systemd/system/template-manager.service >/dev/null
+[Unit]
+Description=E2B Template Manager
+Documentation=https://github.com/e2b-dev/infra
+After=network-online.target consul.service
+Wants=network-online.target
+Requires=consul.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/e2b
+EnvironmentFile=-/opt/e2b/template-manager.env
+# NODE_ID will be set dynamically from instance metadata or hostname
+ExecStartPre=/bin/bash -c 'if [ -z "$NODE_ID" ]; then export NODE_ID=$(curl -sSL -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/id 2>/dev/null || hostname); fi'
+ExecStart=/bin/bash -c 'cd /opt/e2b && export NODE_ID=${NODE_ID:-$(hostname)} && set -a && source template-manager.env && set +a && exec ./bin/template-manager --port 5009 --proxy-port 15007'
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+# Security: Allow loop device operations (needed for template builds)
+# No PrivateDevices - we need /dev/loop-control access
+# No NoNewPrivileges - we may need capability escalation
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+# Create Consul service definition for template-manager
+# Consul agent uses -config-dir=/opt/consul/config
+sudo mkdir -p /opt/consul/config
+cat <<'CONSUL_SERVICE' | sudo tee /opt/consul/config/template-manager.json >/dev/null
+{
+  "service": {
+    "name": "template-manager",
+    "port": 5009,
+    "tags": ["grpc"],
+    "check": {
+      "grpc": "127.0.0.1:5009",
+      "interval": "10s",
+      "timeout": "3s"
+    }
+  }
+}
+CONSUL_SERVICE
+
+# Set proper ownership and reload Consul to pick up new service definition
+sudo chown consul:consul /opt/consul/config/template-manager.json 2>/dev/null || sudo chown root:root /opt/consul/config/template-manager.json
+sudo systemctl reload consul || sudo systemctl restart consul || true
+sleep 2
+
+# Reload systemd and enable/start service (idempotent)
+sudo systemctl daemon-reload
+sudo systemctl stop template-manager || true
+sudo systemctl enable template-manager || true  # Safe if already enabled
+sudo systemctl start template-manager || true   # Will fail gracefully if binary doesn't exist yet
+sleep 2
+echo "Template Manager systemd service status:"
+sudo systemctl status template-manager --no-pager -l || true
+EOF
+echo -e "${GREEN}✓ Template Manager deployed as systemd service${NC}"
 echo ""
 
 # Wait for template-manager to register in Consul before starting API (up to 90s)
@@ -239,7 +348,8 @@ export NOMAD_BIN="${NOMAD_BIN_REMOTE}"
 overall_rc=0
 
 echo "=== Nomad Job Summary (critical jobs) ==="
-for job in orchestrator template-manager api client-proxy; do
+# NOTE: template-manager runs as systemd service, not Nomad job
+for job in orchestrator api client-proxy; do
   echo ""
   echo "Job: \${job}"
   

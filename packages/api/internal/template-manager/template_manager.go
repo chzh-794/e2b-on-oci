@@ -225,20 +225,20 @@ func (tm *TemplateManager) CreateTemplate(t trace.Tracer, ctx context.Context, t
 	)
 	defer span.End()
 
-	zap.L().Info("开始创建模板 - template-manager", 
+	zap.L().Info("Starting template creation - template-manager", 
 		zap.String("templateID", templateID), 
 		zap.String("buildID", buildID.String()),
 		zap.String("templateManagerHost", templateManagerHost))
 
 	features, err := sandbox.NewVersionInfo(firecrackerVersion)
 	if err != nil {
-		zap.L().Error("获取Firecracker版本特性失败", 
+		zap.L().Error("Failed to get Firecracker version features", 
 			zap.String("firecrackerVersion", firecrackerVersion), 
 			zap.Error(err))
 		return fmt.Errorf("failed to get features for firecracker version '%s': %w", firecrackerVersion, err)
 	}
 
-	zap.L().Info("获取builder客户端", 
+	zap.L().Info("Getting builder client", 
 		zap.String("templateID", templateID), 
 		zap.String("buildID", buildID.String()),
 		zap.Bool("hasClusterID", clusterID != nil),
@@ -246,14 +246,14 @@ func (tm *TemplateManager) CreateTemplate(t trace.Tracer, ctx context.Context, t
 
 	client, clientMd, _, err := tm.getBuilderClient(clusterID, clusterNodeID, true)
 	if err != nil {
-		zap.L().Error("获取builder客户端失败", 
+		zap.L().Error("Failed to get builder client", 
 			zap.String("templateID", templateID), 
 			zap.String("buildID", buildID.String()), 
 			zap.Error(err))
 		return fmt.Errorf("failed to get builder edgeHttpClient: %w", err)
 	}
 
-	zap.L().Info("准备发送模板创建请求", 
+	zap.L().Info("Preparing to send template creation request", 
 		zap.String("templateID", templateID), 
 		zap.String("buildID", buildID.String()))
 
@@ -276,7 +276,7 @@ func (tm *TemplateManager) CreateTemplate(t trace.Tracer, ctx context.Context, t
 	)
 
 	if err != nil {
-		zap.L().Error("发送模板创建请求失败", 
+		zap.L().Error("Failed to send template creation request", 
 			zap.String("templateID", templateID), 
 			zap.String("buildID", buildID.String()), 
 			zap.Error(err))
@@ -284,7 +284,7 @@ func (tm *TemplateManager) CreateTemplate(t trace.Tracer, ctx context.Context, t
 		return fmt.Errorf("failed to create template '%s': %w", templateID, err)
 	}
 
-	zap.L().Info("模板创建请求发送成功", 
+	zap.L().Info("Template creation request sent successfully", 
 		zap.String("templateID", templateID), 
 		zap.String("buildID", buildID.String()))
 

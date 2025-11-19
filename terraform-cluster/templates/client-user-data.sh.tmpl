@@ -12,6 +12,11 @@ echo "Compartment: ${compartment_id}"
 echo "Region: ${region}"
 echo "================================================================================"
 
+# Wait for apt locks to be released (cloud-init may be running other apt operations)
+while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 2; done
+while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
+while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 2; done
+
 sudo apt-get update -y
 sudo apt-get install -y python3-pip jq gzip nfs-common nftables nbd-client
 pip3 install --upgrade oci-cli
@@ -23,6 +28,11 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now docker.socket
 sudo systemctl restart docker || sudo systemctl start docker
 sudo usermod -aG docker ubuntu || true
+
+# Add root (Nomad agent user) to disk and kvm groups for NBD device access
+# This is required for orchestrator to access /dev/nbd* devices in Nomad raw_exec allocations
+# POC fix from POC_SUMMARY.md section "### 5. NBD Device Permissions"
+sudo usermod -a -G disk,kvm root || true
 
 cat <<'EOF' >/etc/profile.d/e2b-client-env.sh
 export E2B_ENVIRONMENT="${environment}"
@@ -65,13 +75,16 @@ sudo systemctl daemon-reload
 sudo systemctl enable e2b-netns.service
 sudo systemctl start e2b-netns.service
 
-# Grant CAP_SYS_ADMIN to unshare, bash, and ip binaries for Firecracker namespace isolation
+# Grant CAP_SYS_ADMIN to unshare, bash, ip, losetup, and mount binaries for Firecracker namespace isolation
 # This allows nomad user to:
 # - Run 'unshare -pf' and perform tmpfs mounts inside the unshare namespace
 # - Create network namespaces via 'ip netns add' (which requires mount permissions for /run/netns)
+# - Mount ext4 filesystems via 'mount -o loop' (mount internally uses losetup, so losetup needs CAP_SYS_ADMIN)
 sudo setcap cap_sys_admin+ep /usr/bin/unshare || true
 sudo setcap cap_sys_admin+ep /usr/bin/bash || true
 sudo setcap cap_sys_admin+ep /usr/bin/ip || true
+sudo setcap cap_sys_admin+ep /usr/sbin/losetup || true
+sudo setcap cap_sys_admin+ep /usr/bin/mount || true
 
 sudo mkdir -p /opt/consul/bin /opt/nomad/bin /opt/e2b/runtime /orchestrator /var/e2b/templates /fc-envd /fc-kernels /fc-versions /mnt/disks/fc-envs/v1
 sudo chmod 0755 /opt/consul /opt/nomad /opt/e2b /opt/e2b/runtime /orchestrator
@@ -196,5 +209,66 @@ fi
 
 echo "Running initial network/NBD cleanup to seed slot pool..."
 sudo /usr/local/bin/e2b-cleanup-network.sh || true
+
+# Install template-manager systemd service (if binaries exist)
+# This allows template-manager to auto-start on boot without requiring deploy-services.sh
+# The service will only start if /opt/e2b/bin/template-manager exists (created by deploy-poc.sh Phase 2)
+if [ -f /opt/e2b/bin/template-manager ]; then
+  echo "Installing template-manager systemd service..."
+  
+  # Install systemd service file
+  sudo tee /etc/systemd/system/template-manager.service >/dev/null <<'EOF'
+[Unit]
+Description=E2B Template Manager
+Documentation=https://github.com/e2b-dev/infra
+After=network-online.target consul.service
+Wants=network-online.target
+Requires=consul.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/e2b
+EnvironmentFile=-/opt/e2b/template-manager.env
+# NODE_ID will be set dynamically from instance metadata or hostname
+ExecStartPre=/bin/bash -c 'if [ -z "$NODE_ID" ]; then export NODE_ID=$(curl -sSL -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/id 2>/dev/null || hostname); fi'
+ExecStart=/bin/bash -c 'cd /opt/e2b && export NODE_ID=$${NODE_ID:-$$(hostname)} && set -a && source template-manager.env && set +a && exec ./bin/template-manager --port 5009 --proxy-port 15007'
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  # Create Consul service definition (if Consul config directory exists)
+  if [ -d /opt/consul/config ]; then
+    sudo tee /opt/consul/config/template-manager.json >/dev/null <<'EOF'
+{
+  "service": {
+    "name": "template-manager",
+    "port": 5009,
+    "tags": ["grpc"],
+    "check": {
+      "grpc": "127.0.0.1:5009",
+      "interval": "10s",
+      "timeout": "3s"
+    }
+  }
+}
+EOF
+    sudo chown consul:consul /opt/consul/config/template-manager.json 2>/dev/null || sudo chown root:root /opt/consul/config/template-manager.json
+  fi
+
+  # Enable and start service (will start after binaries are deployed)
+  sudo systemctl daemon-reload
+  sudo systemctl enable template-manager || true
+  # Don't start here - binaries may not exist yet, deploy-poc.sh Phase 2 will start it
+else
+  echo "template-manager binary not found, skipping systemd service installation (will be installed by deploy-services.sh)"
+fi
 
 echo "E2B client pool bootstrap completed."

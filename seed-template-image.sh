@@ -142,7 +142,7 @@ fi
 if [[ -n "${DOCKERFILE:-}" ]]; then
   echo "Dockerfile  : (provided via --dockerfile)"
 else
-  echo "Context     : ${DOCKER_CONTEXT}"
+echo "Context     : ${DOCKER_CONTEXT}"
 fi
 echo ""
 
@@ -157,7 +157,7 @@ if [[ -n "${DOCKERFILE:-}" ]]; then
   printf '%s' "${DOCKERFILE}" | ssh "${SSH_BASE_OPTS[@]}" "${SSH_USER}@${CLIENT_HOST}" "cat > '${REMOTE_PATH}/Dockerfile'"
 else
   # Copy context directory
-  scp "${SSH_BASE_OPTS[@]}" -r "${DOCKER_CONTEXT}/." "${SSH_USER}@${CLIENT_HOST}:${REMOTE_PATH}/"
+scp "${SSH_BASE_OPTS[@]}" -r "${DOCKER_CONTEXT}/." "${SSH_USER}@${CLIENT_HOST}:${REMOTE_PATH}/"
 fi
 
 echo ""

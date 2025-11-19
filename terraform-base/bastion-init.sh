@@ -35,15 +35,47 @@ while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/
   sleep 5
 done
 
+# Ensure outbound networking (DNS + HTTP) is ready before installing packages
+check_url="http://archive.ubuntu.com/ubuntu/"
+echo "Verifying outbound connectivity ($check_url)..." | tee -a $LOG_FILE
+for attempt in $(seq 1 12); do
+  if curl -fs --max-time 5 "$check_url" >/dev/null 2>&1; then
+    echo "Outbound connectivity verified." | tee -a $LOG_FILE
+    break
+  fi
+  echo "Attempt ${attempt}/12: Network not ready, retrying in 5s..." | tee -a $LOG_FILE
+  sleep 5
+  if [ "$attempt" -eq 12 ]; then
+    echo "ERROR: Network never became ready (unable to reach $check_url)" | tee -a $LOG_FILE
+    exit 1
+  fi
+done
+
+# Helper to run apt commands with retries (handles transient DNS failures)
+run_apt() {
+  local description=$1
+  shift
+  for attempt in $(seq 1 5); do
+    echo "Running: $description (attempt ${attempt}/5)" | tee -a $LOG_FILE
+    if "$@" >> $LOG_FILE 2>&1; then
+      return 0
+    fi
+    echo "$description failed, retrying in 5s..." | tee -a $LOG_FILE
+    sleep 5
+  done
+  echo "ERROR: $description failed after retries." | tee -a $LOG_FILE
+  return 1
+}
+
 # Update system
 echo "Updating system packages..." | tee -a $LOG_FILE
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y >> $LOG_FILE 2>&1
-apt-get upgrade -y >> $LOG_FILE 2>&1
+run_apt "apt-get update" apt-get update -y || exit 1
+run_apt "apt-get upgrade" apt-get upgrade -y || exit 1
 
 # Install basic tools
 echo "Installing basic tools..." | tee -a $LOG_FILE
-apt-get install -y \
+run_apt "apt-get install basic tools" apt-get install -y \
   curl \
   wget \
   git \

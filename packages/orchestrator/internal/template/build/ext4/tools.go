@@ -60,6 +60,9 @@ func Mount(ctx context.Context, tracer trace.Tracer, rootfsPath string, mountPoi
 	ctx, mountSpan := tracer.Start(ctx, "mount-ext4")
 	defer mountSpan.End()
 
+	// Use mount -o loop directly (matching AWS implementation)
+	// NOTE: This works on AWS but fails on OCI. The difference is likely
+	// in the Nomad environment configuration, not the code.
 	cmd := exec.CommandContext(ctx, "mount", "-o", "loop", rootfsPath, mountPoint)
 
 	mountStdoutWriter := telemetry.NewEventWriter(ctx, "stdout")

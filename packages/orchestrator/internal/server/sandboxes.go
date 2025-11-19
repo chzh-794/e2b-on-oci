@@ -393,6 +393,22 @@ func (s *server) Exec(ctx context.Context, req *orchestrator.SandboxExecRequest)
 
 	telemetry.SetAttributes(ctx, telemetry.WithSandboxID(req.GetSandboxId()))
 
+	// DETAILED LOGGING: Log exec request start (also to stderr for debugging)
+	zap.L().Info("Exec request received",
+		zap.String("sandbox_id", req.GetSandboxId()),
+		zap.String("command", req.GetCommand()),
+		zap.Strings("args", req.GetArgs()),
+		zap.Uint32("timeout_seconds", func() uint32 {
+			if req.TimeoutSeconds != nil {
+				return *req.TimeoutSeconds
+			}
+			return 0
+		}()),
+	)
+	// Also log to stderr for immediate visibility
+	fmt.Fprintf(os.Stderr, "[ORCHESTRATOR] Exec request: sandbox=%s command=%s args=%v\n",
+		req.GetSandboxId(), req.GetCommand(), req.GetArgs())
+
 	if req.GetSandboxId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "sandbox_id is required")
 	}
@@ -419,10 +435,17 @@ func (s *server) Exec(ctx context.Context, req *orchestrator.SandboxExecRequest)
 
 	httpClient := &http.Client{}
 
+	// Apply default timeout if not specified (60 seconds should be enough for most commands)
+	// This prevents infinite hangs if the stream doesn't close or End event is never sent
 	var cancel context.CancelFunc
 	if req.TimeoutSeconds != nil && req.GetTimeoutSeconds() > 0 {
 		timeout := time.Duration(req.GetTimeoutSeconds()) * time.Second
 		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	} else {
+		// Default timeout: 60 seconds
+		defaultTimeout := 60 * time.Second
+		ctx, cancel = context.WithTimeout(ctx, defaultTimeout)
 		defer cancel()
 	}
 
@@ -455,42 +478,116 @@ func (s *server) Exec(ctx context.Context, req *orchestrator.SandboxExecRequest)
 		startReq.Header().Set("X-Access-Token", *sbx.Config.EnvdAccessToken)
 	}
 
+	// DETAILED LOGGING: Log before starting process stream
+	zap.L().Info("Starting process stream",
+		zap.String("sandbox_id", req.GetSandboxId()),
+		zap.String("command", req.GetCommand()),
+		zap.String("base_url", baseURL),
+	)
+
 	stream, err := processClient.Start(ctx, startReq)
 	if err != nil {
+		zap.L().Error("Failed to start process stream",
+			zap.String("sandbox_id", req.GetSandboxId()),
+			zap.String("command", req.GetCommand()),
+			zap.String("base_url", baseURL),
+			zap.Error(err),
+		)
 		return nil, status.Errorf(codes.Internal, "failed to start process: %v", err)
 	}
 	defer stream.Close()
 
+	zap.L().Info("Process stream started, converting to channels",
+		zap.String("sandbox_id", req.GetSandboxId()),
+		zap.String("command", req.GetCommand()),
+	)
+	fmt.Fprintf(os.Stderr, "[ORCHESTRATOR] Process stream started: sandbox=%s command=%s\n",
+		req.GetSandboxId(), req.GetCommand())
+
 	msgCh, errCh := sharedgrpc.StreamToChannel(ctx, stream)
+	fmt.Fprintf(os.Stderr, "[ORCHESTRATOR] StreamToChannel returned, entering event loop\n")
 
 	var stdoutBuf bytes.Buffer
 	var stderrBuf bytes.Buffer
 	var exitCode int32
 	statusText := ""
 
+	zap.L().Info("Entering exec event loop",
+		zap.String("sandbox_id", req.GetSandboxId()),
+		zap.String("command", req.GetCommand()),
+	)
+	fmt.Fprintf(os.Stderr, "[ORCHESTRATOR] Entering exec event loop: sandbox=%s command=%s\n",
+		req.GetSandboxId(), req.GetCommand())
+
+	loopIteration := 0
 	for {
+		loopIteration++
+		if loopIteration%100 == 0 {
+			fmt.Fprintf(os.Stderr, "[ORCHESTRATOR] Event loop iteration %d: sandbox=%s command=%s\n",
+				loopIteration, req.GetSandboxId(), req.GetCommand())
+		}
 		select {
 		case <-ctx.Done():
+			zap.L().Warn("Exec context cancelled/timeout",
+				zap.String("sandbox_id", req.GetSandboxId()),
+				zap.String("command", req.GetCommand()),
+				zap.Error(ctx.Err()),
+				zap.String("stdout_so_far", stdoutBuf.String()),
+				zap.String("stderr_so_far", stderrBuf.String()),
+			)
 			return nil, status.Errorf(codes.DeadlineExceeded, "sandbox exec cancelled: %v", ctx.Err())
 		case streamErr, ok := <-errCh:
 			if ok && streamErr != nil {
+				zap.L().Error("Stream error received",
+					zap.String("sandbox_id", req.GetSandboxId()),
+					zap.String("command", req.GetCommand()),
+					zap.Error(streamErr),
+				)
 				return nil, status.Errorf(codes.Internal, "stream error: %v", streamErr)
 			}
+			zap.L().Info("Error channel closed",
+				zap.String("sandbox_id", req.GetSandboxId()),
+				zap.String("command", req.GetCommand()),
+			)
 			errCh = nil
 			if msgCh == nil {
+				zap.L().Info("Both channels closed, exiting loop",
+					zap.String("sandbox_id", req.GetSandboxId()),
+					zap.String("command", req.GetCommand()),
+				)
 				goto DONE
 			}
 		case msg, ok := <-msgCh:
 			if !ok {
+				zap.L().Info("Message channel closed",
+					zap.String("sandbox_id", req.GetSandboxId()),
+					zap.String("command", req.GetCommand()),
+					zap.String("stdout_so_far", stdoutBuf.String()),
+					zap.String("stderr_so_far", stderrBuf.String()),
+					zap.Int32("exit_code", exitCode),
+				)
+				fmt.Fprintf(os.Stderr, "[ORCHESTRATOR] Message channel closed: sandbox=%s command=%s stdout=%s exit_code=%d\n",
+					req.GetSandboxId(), req.GetCommand(), stdoutBuf.String(), exitCode)
 				msgCh = nil
 				if errCh == nil {
+					zap.L().Info("Both channels closed, exiting loop",
+						zap.String("sandbox_id", req.GetSandboxId()),
+						zap.String("command", req.GetCommand()),
+					)
+					fmt.Fprintf(os.Stderr, "[ORCHESTRATOR] Both channels closed, exiting loop\n")
 					goto DONE
 				}
 				continue
 			}
+			fmt.Fprintf(os.Stderr, "[ORCHESTRATOR] Received message: sandbox=%s command=%s\n",
+				req.GetSandboxId(), req.GetCommand())
 
 			event := msg.GetEvent()
 			if event == nil {
+				zap.L().Warn("Received nil event",
+					zap.String("sandbox_id", req.GetSandboxId()),
+					zap.String("command", req.GetCommand()),
+				)
 				continue
 			}
 
@@ -499,9 +596,19 @@ func (s *server) Exec(ctx context.Context, req *orchestrator.SandboxExecRequest)
 				data := event.GetData()
 				if out := data.GetStdout(); len(out) > 0 {
 					stdoutBuf.Write(out)
+					zap.L().Debug("Received stdout data",
+						zap.String("sandbox_id", req.GetSandboxId()),
+						zap.String("command", req.GetCommand()),
+						zap.String("data", string(out)),
+					)
 				}
 				if errBytes := data.GetStderr(); len(errBytes) > 0 {
 					stderrBuf.Write(errBytes)
+					zap.L().Debug("Received stderr data",
+						zap.String("sandbox_id", req.GetSandboxId()),
+						zap.String("command", req.GetCommand()),
+						zap.String("data", string(errBytes)),
+					)
 				}
 			case event.GetEnd() != nil:
 				end := event.GetEnd()
@@ -514,13 +621,42 @@ func (s *server) Exec(ctx context.Context, req *orchestrator.SandboxExecRequest)
 						statusText = errMsg
 					}
 				}
+				zap.L().Info("Received End event - process completed",
+					zap.String("sandbox_id", req.GetSandboxId()),
+					zap.String("command", req.GetCommand()),
+					zap.Int32("exit_code", exitCode),
+					zap.String("status", statusText),
+					zap.String("stdout", stdoutBuf.String()),
+					zap.String("stderr", stderrBuf.String()),
+				)
+				// Also log to stderr for immediate visibility
+				fmt.Fprintf(os.Stderr, "[ORCHESTRATOR] End event received: sandbox=%s command=%s exit_code=%d stdout=%s\n",
+					req.GetSandboxId(), req.GetCommand(), exitCode, stdoutBuf.String())
+				// End event received - process has completed
+				// Exit immediately instead of waiting for stream to close
+				// The stream may not close immediately, causing infinite wait
+				fmt.Fprintf(os.Stderr, "[ORCHESTRATOR] Exiting exec loop after End event\n")
+				goto DONE
 			default:
+				zap.L().Debug("Received other event type",
+					zap.String("sandbox_id", req.GetSandboxId()),
+					zap.String("command", req.GetCommand()),
+					zap.String("event_type", fmt.Sprintf("%T", event)),
+				)
 				// ignore other events (start, keepalive, etc.)
 			}
 		}
 	}
 
 DONE:
+	zap.L().Info("Exec completed",
+		zap.String("sandbox_id", req.GetSandboxId()),
+		zap.String("command", req.GetCommand()),
+		zap.Int32("exit_code", exitCode),
+		zap.String("status", statusText),
+		zap.String("stdout", stdoutBuf.String()),
+		zap.String("stderr", stderrBuf.String()),
+	)
 	return &orchestrator.SandboxExecResponse{
 		Stdout:   stdoutBuf.String(),
 		Stderr:   stderrBuf.String(),

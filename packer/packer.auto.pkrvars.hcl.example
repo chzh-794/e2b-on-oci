@@ -11,9 +11,9 @@
 # Or from OCI Resource Manager → Stack → Jobs → Apply Job → Outputs
 
 compartment_ocid    = "ocid1.compartment.oc1..aaaaaaaxxxxxx"        # terraform output compartment_ocid (or use same as Phase 1)
-availability_domain = "xyz:AP-OSAKA-AD-1"                           # terraform output bastion_availability_domain
-subnet_ocid         = "ocid1.subnet.oc1.ap-osaka-1.aaaaaaaxxxxxx"  # terraform output public_subnet_id
-ubuntu_image_ocid   = "ocid1.image.oc1.ap-osaka-1.aaaaaaaxxxxxx"   # terraform output ubuntu_image_id
+availability_domain = "xyz:US-ASHBURN-AD-1"                           # terraform output bastion_availability_domain
+subnet_ocid         = "ocid1.subnet.oc1.iad.aaaaaaaxxxxxx"  # terraform output public_subnet_id
+ubuntu_image_ocid   = "ocid1.image.oc1.iad.aaaaaaaxxxxxx"   # terraform output ubuntu_image_id
 
 # ===================================================================================================
 # Optional: Override Defaults

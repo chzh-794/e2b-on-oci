@@ -182,6 +182,14 @@ func (p *Pool) Get(ctx context.Context, tracer trace.Tracer, allowInternet bool)
 		zap.L().Info("[network slot pool]: Creating network setup for slot",
 			zap.String("namespace", slot.NamespaceID()))
 		if err := slot.CreateNetwork(); err != nil {
+			// DETAILED LOGGING: Enhanced error context for network creation failures
+			zap.L().Error("[network slot pool]: Failed to create network setup",
+				zap.String("namespace", slot.NamespaceID()),
+				zap.String("error_type", fmt.Sprintf("%T", err)),
+				zap.String("error_message", err.Error()),
+				zap.Error(err),
+				zap.Stack("stack_trace"),
+			)
 			// If creation fails, clean up and return error
 			cleanupErr := cleanupDanglingNamespace(slot)
 			releaseErr := p.slotStorage.Release(slot)

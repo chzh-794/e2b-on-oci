@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -82,14 +83,62 @@ func (a *APIStore) V1SandboxExec(c *gin.Context, sandboxID string) {
 		grpcReq.AccessToken = body.AccessToken
 	}
 
+	// DETAILED LOGGING: Log exec request details
+	zap.L().Info("Executing command via orchestrator",
+		logger.WithSandboxID(sandboxID),
+		zap.String("orchestrator_id", info.OrchestratorId),
+		zap.String("orchestrator_ip", node.Ip),
+		zap.String("command", body.Command),
+	)
+
 	grpcResp, err := node.Client.Sandbox.Exec(ctx, grpcReq)
+	
+	// DETAILED LOGGING: Log when gRPC call returns
+	if err == nil && grpcResp != nil {
+		zap.L().Info("Sandbox exec gRPC call succeeded",
+			logger.WithSandboxID(sandboxID),
+			zap.String("orchestrator_id", info.OrchestratorId),
+			zap.String("orchestrator_ip", node.Ip),
+			zap.String("command", body.Command),
+			zap.String("stdout", grpcResp.GetStdout()),
+			zap.String("stderr", grpcResp.GetStderr()),
+			zap.Int32("exit_code", grpcResp.GetExitCode()),
+			zap.String("status", grpcResp.GetStatus()),
+		)
+		fmt.Fprintf(os.Stderr, "[CLIENT-PROXY] gRPC exec succeeded: sandbox=%s command=%s exit_code=%d stdout=%s\n",
+			sandboxID, body.Command, grpcResp.GetExitCode(), grpcResp.GetStdout())
+	}
+	
 	if err != nil {
+		// DETAILED LOGGING: Capture full error context
+		zap.L().Error("Sandbox exec gRPC call failed",
+			logger.WithSandboxID(sandboxID),
+			zap.String("orchestrator_id", info.OrchestratorId),
+			zap.String("orchestrator_ip", node.Ip),
+			zap.String("error_message", err.Error()),
+			zap.String("error_type", fmt.Sprintf("%T", err)),
+			zap.Error(err),
+			zap.Stack("stack_trace"),
+		)
+
 		st, ok := status.FromError(err)
 		if !ok {
+			zap.L().Error("gRPC error is not a status error",
+				logger.WithSandboxID(sandboxID),
+				zap.String("error_type", fmt.Sprintf("%T", err)),
+				zap.Error(err),
+			)
 			a.sendAPIStoreError(c, http.StatusInternalServerError, "Unexpected error executing command")
 			telemetry.ReportCriticalError(ctx, "sandbox exec error", err, telemetry.WithSandboxID(sandboxID))
 			return
 		}
+
+		zap.L().Error("gRPC error details",
+			logger.WithSandboxID(sandboxID),
+			zap.String("grpc_code", st.Code().String()),
+			zap.String("grpc_message", st.Message()),
+			zap.Any("grpc_details", st.Details()),
+		)
 
 		switch st.Code() {
 		case codes.NotFound:
@@ -99,6 +148,11 @@ func (a *APIStore) V1SandboxExec(c *gin.Context, sandboxID string) {
 		case codes.InvalidArgument:
 			a.sendAPIStoreError(c, http.StatusBadRequest, st.Message())
 		default:
+			zap.L().Error("Unhandled gRPC error code",
+				logger.WithSandboxID(sandboxID),
+				zap.String("grpc_code", st.Code().String()),
+				zap.String("grpc_message", st.Message()),
+			)
 			a.sendAPIStoreError(c, http.StatusInternalServerError, st.Message())
 		}
 

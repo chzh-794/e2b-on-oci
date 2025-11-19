@@ -1,6 +1,6 @@
 job "orchestrator" {
   type        = "system"
-  datacenters = ["ap-osaka-1"]
+  datacenters = ["us-ashburn-1"]
   priority    = 90
 
   constraint {
@@ -45,11 +45,8 @@ job "orchestrator" {
       }
 
       config {
-        command = "/bin/bash"
-        args    = [
-          "-lc",
-          "cd /opt/e2b && set -a && source orchestrator.env && set +a && ./bin/orchestrator --port 5008 --proxy-port 5007"
-        ]
+        command = "/opt/e2b/bin/orchestrator-wrapper.sh"
+        args    = []
       }
     }
   }

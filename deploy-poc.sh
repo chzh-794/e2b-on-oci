@@ -330,7 +330,7 @@ if [[ ! -f /etc/systemd/system/nomad.service ]]; then
   sudo tee /etc/systemd/system/nomad.service >/dev/null <<'SERVICE'
 [Unit]
 Description=HashiCorp Nomad Client
-After=network-online.target
+After=network-online.target cloud-final.service
 Wants=network-online.target
 
 [Service]
@@ -344,6 +344,16 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 SERVICE
 fi
+
+sudo mkdir -p /etc/systemd/system/nomad.service.d
+sudo tee /etc/systemd/system/nomad.service.d/10-e2b-devices.conf >/dev/null <<'SERVICE'
+[Service]
+DevicePolicy=auto
+DeviceAllow=block-43:* rwm     # /dev/nbd*
+DeviceAllow=block-7:* rwm      # /dev/loop*
+DeviceAllow=char-10:237 rwm    # /dev/loop-control
+DeviceAllow=char-10:200 rwm    # /dev/net/tun (tap creation)
+SERVICE
 
 sudo systemctl daemon-reload
 
@@ -534,14 +544,21 @@ sudo mount --make-shared /run 2>/dev/null || true
 sudo umount /run/netns 2>/dev/null || true
 sudo mount -t tmpfs -o shared tmpfs /run/netns || true
 
-# Grant CAP_SYS_ADMIN to unshare, bash, and ip binaries for Firecracker namespace isolation
+# Grant CAP_SYS_ADMIN to unshare, bash, ip, losetup, and mount binaries for Firecracker namespace isolation
 # This allows nomad user to:
 # - Run 'unshare -pf' and perform tmpfs mounts inside the unshare namespace
 # - Create network namespaces via Go netns.NewNamed() (which may use ip netns internally)
+# - Mount ext4 filesystems via 'mount -o loop' (mount internally uses losetup, so losetup needs CAP_SYS_ADMIN)
 sudo setcap cap_sys_admin+ep /usr/bin/unshare || true
 sudo setcap cap_sys_admin+ep /usr/bin/bash || true
 sudo setcap cap_sys_admin+ep /usr/bin/ip || true
+sudo setcap cap_sys_admin+ep /usr/sbin/losetup || true
+sudo setcap cap_sys_admin+ep /usr/bin/mount || true
 
+# Add root (Nomad agent user) to disk and kvm groups for NBD device access
+# This is required for orchestrator to access /dev/nbd* devices in Nomad raw_exec allocations
+# POC fix from POC_SUMMARY.md section "### 5. NBD Device Permissions"
+sudo usermod -a -G disk,kvm root || true
 
 # Load NBD kernel module
 sudo modprobe nbd max_part=16 || true
@@ -890,6 +907,10 @@ cat <<EOF | ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'cat > ~/e2b/templ
 # Storage Configuration (Local for POC)
 STORAGE_PROVIDER=Local
 LOCAL_TEMPLATE_STORAGE_BASE_PATH=/var/e2b/templates
+TEMPLATE_BUCKET_NAME=local
+
+# Artifacts Registry Configuration (Local for POC)
+ARTIFACTS_REGISTRY_PROVIDER=Local
 
 # Firecracker Configuration
 FIRECRACKER_BIN_PATH=/usr/local/bin/firecracker
@@ -907,6 +928,7 @@ ENVIRONMENT=dev
 OTEL_TRACING_PRINT=false
 OTEL_COLLECTOR_GRPC_ENDPOINT=localhost:4317
 ORCHESTRATOR_SERVICES=template-manager
+SANDBOX_DEBUG_VM_LOGS=true
 
 # Lock Path
 ORCHESTRATOR_LOCK_PATH=/opt/e2b/runtime/orchestrator.lock

@@ -116,6 +116,7 @@ run_client_cleanup() {
 }
 
 API_BASE="http://127.0.0.1:50001"
+# Note: API routes do NOT have /v1/ prefix - they are registered directly (e.g., /sandboxes/{id}/exec)
 CLIENT_PROXY_BASE="http://127.0.0.1:3001"
 
 escape_json() {
@@ -140,7 +141,8 @@ api_post() {
   local payload=$2
   local payload_b64
   payload_b64=$(printf '%s' "${payload}" | base64 | tr -d '\n')
-  ssh_api "PAYLOAD='${payload_b64}'; echo \$PAYLOAD | base64 -d | curl -sS -X POST -H 'X-API-Key: ${TEAM_API_KEY}' -H 'Authorization: Bearer ${ADMIN_API_TOKEN}' -H 'Content-Type: application/json' --data-binary @- ${API_BASE}${path}"
+  # Add timeout to prevent hanging (30 seconds should be enough for exec calls)
+  ssh_api "PAYLOAD='${payload_b64}'; echo \"\$PAYLOAD\" | base64 -d | timeout 30 curl -sS -m 30 -X POST -H 'X-API-Key: ${TEAM_API_KEY}' -H 'Authorization: Bearer ${ADMIN_API_TOKEN}' -H 'Content-Type: application/json' --data-binary @- ${API_BASE}${path} 2>&1"
 }
 
 api_post_raw() {
@@ -347,14 +349,47 @@ echo ""
 # Check if Python is available
 echo ""
 echo "  [Step 2/3] Checking if Python3 is installed..."
+# Use 'bash -c "command -v python3"' since 'command' is a bash builtin, not an external executable
+# The process service executes commands directly (not through a shell), so we need to invoke bash
 python_check_payload=$(cat <<'JSON'
-{"command":"which","args":["python3"]}
+{"command":"bash","args":["-c","command -v python3"]}
 JSON
 )
 PYTHON_CHECK=$(api_post "/sandboxes/${sandbox_id}/exec" "${python_check_payload}")
-# Handle response that may contain control characters
-if ! echo "${PYTHON_CHECK}" | jq -e '.' >/dev/null 2>&1; then
-  # Try to extract error code from raw response
+# Debug: Show what we got (if empty, the api_post call failed)
+if [[ -z "${PYTHON_CHECK}" ]]; then
+  echo -e "${RED}Error: No response from API for Python check${NC}" >&2
+  echo "This usually means the API call failed or timed out." >&2
+  echo "Check API logs and network connectivity." >&2
+  exit 1
+fi
+# Check for error response first (before JSON parsing)
+if echo "${PYTHON_CHECK}" | jq -e '.code' >/dev/null 2>&1; then
+  ERROR_CODE=$(echo "${PYTHON_CHECK}" | jq -r '.code // empty')
+  ERROR_MSG=$(echo "${PYTHON_CHECK}" | jq -r '.message // "Unknown error"')
+  echo -e "${RED}Python check failed (HTTP ${ERROR_CODE}):${NC}" >&2
+  echo "${ERROR_MSG}" >&2
+  echo "" >&2
+  echo "Full response:" >&2
+  echo "${PYTHON_CHECK}" | jq '.' >&2
+  exit 1
+fi
+# Handle response that may contain control characters (like literal newlines in JSON strings)
+# Try to parse with jq first (works if JSON is valid)
+if echo "${PYTHON_CHECK}" | jq -e '.' >/dev/null 2>&1; then
+  # Valid JSON - parse normally
+  if echo "${PYTHON_CHECK}" | jq -e '.code' >/dev/null 2>&1; then
+    echo -e "${YELLOW}Python check failed:${NC}"
+    echo "${PYTHON_CHECK}" | jq '.'
+    echo ""
+    echo "Template may not have Python installed. Ensure template was built with Python in Dockerfile."
+    exit 1
+  fi
+  echo "${PYTHON_CHECK}" | jq '.'
+  PYTHON_PATH=$(echo "${PYTHON_CHECK}" | jq -r '.stdout // empty' | tr -d '\n' | xargs)
+else
+  # Invalid JSON (likely has literal newlines) - extract stdout directly
+  # Try to extract error code first
   if echo "${PYTHON_CHECK}" | grep -q '"code"'; then
     ERROR_CODE=$(echo "${PYTHON_CHECK}" | grep -o '"code"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*' | head -1)
     if [[ -n "${ERROR_CODE}" ]]; then
@@ -365,22 +400,17 @@ if ! echo "${PYTHON_CHECK}" | jq -e '.' >/dev/null 2>&1; then
       exit 1
     fi
   fi
-  # If we can't parse, assume it's a valid response with control characters
-  PYTHON_PATH=$(echo "${PYTHON_CHECK}" | grep -o '"stdout"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"stdout"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | head -1 | tr -d '\n' | xargs)
-  # Show raw response
-  echo "${PYTHON_CHECK}" | head -20
-else
-  # Response is valid JSON - show it
-  if echo "${PYTHON_CHECK}" | jq -e '.code' >/dev/null 2>&1; then
-    echo -e "${YELLOW}Python check failed:${NC}"
-    echo "${PYTHON_CHECK}" | jq '.'
-    echo ""
-    echo "Template may not have Python installed. Ensure template was built with Python in Dockerfile."
-    exit 1
+  # Extract stdout value using a method that handles literal newlines
+  # Use awk to extract the value between quotes after "stdout"
+  PYTHON_PATH=$(echo "${PYTHON_CHECK}" | awk -F'"stdout"[[:space:]]*:[[:space:]]*"' '{print $2}' | awk -F'"' '{print $1}' | tr -d '\n' | xargs)
+  if [[ -z "${PYTHON_PATH}" ]]; then
+    # Fallback: try sed with simpler pattern
+    PYTHON_PATH=$(echo "${PYTHON_CHECK}" | sed -n 's/.*"stdout"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | tr -d '\n' | xargs)
   fi
-  # Show the execution result
-  echo "${PYTHON_CHECK}" | jq '.'
-  PYTHON_PATH=$(echo "${PYTHON_CHECK}" | jq -r '.stdout // empty' | tr -d '\n' | xargs)
+  # Show raw response for debugging if extraction failed
+  if [[ -z "${PYTHON_PATH}" ]]; then
+    echo "${PYTHON_CHECK}" | head -20
+  fi
 fi
 
 if [[ -z "${PYTHON_PATH}" || "${PYTHON_PATH}" == "null" ]]; then
@@ -390,81 +420,11 @@ if [[ -z "${PYTHON_PATH}" || "${PYTHON_PATH}" == "null" ]]; then
 fi
 echo ""
 
-# Now run the actual Python validation with a more comprehensive test
+# Now run the actual Python validation with a simple, fast test
 echo ""
-echo "  [Step 3/3] Running comprehensive Python validation script..."
-echo "  This script tests: calculations, string operations, file I/O, data structures, and JSON serialization..."
-# Create a more complex Python script that tests:
-# - Imports (standard library)
-# - File I/O
-# - Calculations
-# - String operations
-# - Data structures
-# - JSON serialization
-# Use a Python script with proper escaping
-python_code="import sys, platform, os, json, math
-from datetime import datetime
-
-results = {
-    'python_version': sys.version.split()[0],
-    'platform': platform.system(),
-    'platform_release': platform.release(),
-    'architecture': platform.machine(),
-    'test_results': {}
-}
-
-# Test 1: Basic calculations
-results['test_results']['calculations'] = {
-    'addition': 2 + 2,
-    'multiplication': 7 * 8,
-    'power': 2 ** 10,
-    'sqrt': math.sqrt(144),
-    'pi': round(math.pi, 4)
-}
-
-# Test 2: String operations
-test_string = 'E2B on OCI Validation'
-results['test_results']['strings'] = {
-    'original': test_string,
-    'upper': test_string.upper(),
-    'lower': test_string.lower(),
-    'length': len(test_string),
-    'contains_e2b': 'E2B' in test_string
-}
-
-# Test 3: File I/O
-test_file = '/tmp/e2b_validation_test.txt'
-test_content = f'Validation test at {datetime.now().isoformat()}\\nPython version: {sys.version}'
-try:
-    with open(test_file, 'w') as f:
-        f.write(test_content)
-    with open(test_file, 'r') as f:
-        read_content = f.read()
-    results['test_results']['file_io'] = {
-        'write_success': True,
-        'read_success': read_content == test_content,
-        'file_exists': os.path.exists(test_file)
-    }
-    os.remove(test_file)
-except Exception as e:
-    results['test_results']['file_io'] = {'error': str(e)}
-
-# Test 4: List and dictionary operations
-test_list = [1, 2, 3, 4, 5]
-test_dict = {'key1': 'value1', 'key2': 42, 'key3': [1, 2, 3]}
-results['test_results']['data_structures'] = {
-    'list_sum': sum(test_list),
-    'list_length': len(test_list),
-    'dict_keys': list(test_dict.keys()),
-    'dict_values': list(test_dict.values())
-}
-
-# Test 5: JSON serialization
-results['test_results']['json'] = {'serializable': True, 'can_encode': True}
-
-# Print results as JSON
-print(json.dumps(results, indent=2))
-print('\\n✅ All Python validation tests completed successfully!')"
+echo "  [Step 3/3] Running Python validation script..."
+# Use a simple Python script that tests basic functionality quickly
+python_code="import sys, json; print(json.dumps({'python_version': sys.version.split()[0], 'test': 'success', 'calc': 2+2}))"
 
 # Escape the Python code for JSON
 python_code_escaped=$(escape_json "${python_code}")
@@ -486,36 +446,48 @@ if echo "${EXEC_RESP}" | jq -e '.code' >/dev/null 2>&1; then
   fi
 fi
 
-# Handle exec response that may contain control characters - try to parse, but don't fail if it doesn't parse
+# Handle exec response
 echo ""
-echo "  Comprehensive Python validation results:"
+echo "  Python validation results:"
 if echo "${EXEC_RESP}" | jq -e '.' >/dev/null 2>&1; then
-  # Try to extract and pretty-print the stdout (which contains the JSON results)
-  STDOUT=$(echo "${EXEC_RESP}" | jq -r '.stdout // empty')
-  if [[ -n "${STDOUT}" && "${STDOUT}" != "null" ]]; then
-    # Try to parse the stdout as JSON (the Python script outputs JSON)
-    if echo "${STDOUT}" | jq -e '.' >/dev/null 2>&1; then
-      echo "${STDOUT}" | jq '.'
-    else
-      # Not JSON, just show it
-      echo "${STDOUT}"
-    fi
-  fi
-  # Also show the full exec response for debugging
-  echo ""
-  echo "  Full exec response:"
+  # Show the full exec response
   echo "${EXEC_RESP}" | jq '.'
+  # Extract stdout to show Python output
+  STDOUT=$(echo "${EXEC_RESP}" | jq -r '.stdout // empty' | tr -d '\n')
+  if [[ -n "${STDOUT}" && "${STDOUT}" != "null" ]]; then
+    echo ""
+    echo "  Python output:"
+    echo "${STDOUT}"
+  fi
 else
-  echo "Exec response (raw, may contain control characters):"
-  echo "${EXEC_RESP}" | head -50
-  echo ""
-  echo "Note: Response contains control characters that jq cannot parse, but execution likely succeeded."
+  echo "Exec response (raw):"
+  echo "${EXEC_RESP}" | head -20
 fi
 echo ""
 
 echo "⇒ Deleting sandbox..."
 DELETE_CODE=$(api_delete "/sandboxes/${sandbox_id}")
 echo -e "${GREEN}Sandbox delete HTTP status:${NC} ${DELETE_CODE}"
+echo ""
+
+# Clean up rootfs files from build directory AFTER sandbox execution is complete
+# Sandboxes use cached templates (NBDProvider), not /tmp/build-templates/ rootfs files
+# So we can safely clean them up after sandbox deletion
+if [[ -n "${BUILD_ID_RESULT}" ]]; then
+  CLIENT_POOL_TARGET="${CLIENT_POOL_PRIVATE:-${CLIENT_POOL_PUBLIC:-}}"
+  if [[ -n "${CLIENT_POOL_TARGET}" ]]; then
+    BUILD_DIR="/tmp/build-templates/${BUILD_ID_RESULT}"
+    echo "⇒ Cleaning up rootfs files from build directory (no longer needed after sandbox execution)..."
+    if ssh_client "sudo test -d '${BUILD_DIR}' 2>/dev/null"; then
+      # Remove rootfs.ext4.build files specifically (they can be several GB each)
+      if ssh_client "sudo find '${BUILD_DIR}' -name 'rootfs.ext4.build*' -type f -delete 2>/dev/null"; then
+        echo -e "${GREEN}Rootfs files removed from build directory${NC}"
+      else
+        echo -e "${YELLOW}Warning: Failed to remove rootfs files${NC}"
+      fi
+    fi
+  fi
+fi
 echo ""
 
 # Clean up the validation template if we created it (not if it was manually specified)

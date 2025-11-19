@@ -1,7 +1,7 @@
 #!/bin/bash
 # Initialize E2B Database on OCI PostgreSQL
 
-set -e
+set -euo pipefail
 
 # Load deploy.env if available (only exists on the workstation)
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,8 +21,9 @@ POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-"E2bPostgres123!"}
 POSTGRES_DB=${POSTGRES_DB:-"postgres"}
 
 # E2B user configuration
-EMAIL="admin@e2b-oci-poc.local"
-TEAM_ID=$(uuidgen)
+# Allow overriding via environment
+EMAIL=${EMAIL:-"admin@e2b-oci-poc.local"}
+TEAM_ID=${TEAM_ID:-$(uuidgen)}
 # Generate tokens with required prefixes
 ACCESS_TOKEN="sk_e2b_$(openssl rand -hex 15)"  # sk_e2b_ + 30 chars = 37 chars total
 TEAM_API_KEY="e2b_$(openssl rand -hex 18)"     # e2b_ + 36 chars = 40 chars total
@@ -39,18 +40,29 @@ echo "Database: ${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
 echo "User: ${POSTGRES_USER}"
 echo ""
 
-# Step 1: Run migrations (create schema)
-echo "Step 1: Running migrations (creating database schema)..."
-psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -f "${SCRIPT_DIR}/migration.sql"
-
-if [ $? -eq 0 ]; then
-    echo "✓ Database schema created"
+# Step 1: Run migrations (optional - Phase 1c already applies them)
+RUN_DB_MIGRATIONS=${RUN_DB_MIGRATIONS:-false}
+if [[ "${RUN_DB_MIGRATIONS}" == "true" ]]; then
+  echo "Step 1: Running migrations (creating database schema)..."
+  psql -v ON_ERROR_STOP=1 \
+    -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+    -f "${SCRIPT_DIR}/migration.sql"
+  echo "✓ Database schema created"
+  echo ""
 else
-    echo "✗ Migration failed"
-    exit 1
+  echo "Step 1: Skipping migrations (already applied earlier)"
+  echo ""
 fi
 
-echo ""
+# Ensure pgcrypto extension exists (needed for team key triggers)
+psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+  -c "CREATE SCHEMA IF NOT EXISTS extensions;" >/dev/null
+psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+  -c "CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;" >/dev/null
+
+# Ensure teams.email column exists (auto migrations create it, but this is idempotent)
+psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+  -c "ALTER TABLE IF EXISTS teams ADD COLUMN IF NOT EXISTS email text;" >/dev/null
 
 # Note: Legacy columns (dockerfile, build_id, vcpu, ram_mb, etc.) were moved to env_builds table
 # by migration 20240315165236_create_env_builds.sql, so they no longer exist in envs table.
@@ -67,6 +79,9 @@ psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POS
     -v teamID="${TEAM_ID}" \
     -v accessToken="${ACCESS_TOKEN}" \
     -v teamAPIKey="${TEAM_API_KEY}" \
+    -v edgeSecret="${EDGE_SERVICE_SECRET:-E2bEdgeSecret2025!}" \
+    -v apiPool="${API_POOL_PRIVATE:-${API_POOL_PUBLIC:-"127.0.0.1"}}" \
+    -v on_error_stop=1 \
     -f "${SCRIPT_DIR}/simple-seed.sql"
 
 if [ $? -eq 0 ]; then
@@ -86,13 +101,21 @@ API_POOL_IP=${API_POOL_PRIVATE:-${API_POOL_PUBLIC:-"127.0.0.1"}}
 # This is the token the API uses to authenticate with the edge API (client-proxy)
 EDGE_SECRET=${EDGE_SERVICE_SECRET:-"E2bEdgeSecret2025!"}
 CLUSTER_ID=$(uuidgen)
+CORRECT_ENDPOINT="${API_POOL_IP}:3001"
 
 psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
     -v teamID="'${TEAM_ID}'" \
     -v clusterID="'${CLUSTER_ID}'" \
-    -v endpoint="'${API_POOL_IP}:3001'" \
+    -v endpoint="'${CORRECT_ENDPOINT}'" \
     -v edgeSecret="'${EDGE_SECRET}'" <<'SQL'
+-- Fix all existing clusters to use the correct endpoint (where client-proxy actually runs)
+-- This prevents issues where clusters were created with wrong endpoints from previous runs
+UPDATE clusters 
+SET endpoint = :endpoint, token = :edgeSecret
+WHERE endpoint != :endpoint OR token != :edgeSecret;
+
 -- Create cluster entry pointing to client-proxy (edge API)
+-- Use ON CONFLICT to update if cluster already exists (prevents duplicates)
 INSERT INTO clusters (id, endpoint, endpoint_tls, token)
 VALUES (:clusterID::uuid, :endpoint, false, :edgeSecret)
 ON CONFLICT (id) DO UPDATE SET endpoint = EXCLUDED.endpoint, token = EXCLUDED.token;

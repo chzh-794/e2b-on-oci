@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/metadata"
 
 	grpclient "github.com/e2b-dev/infra/packages/api/internal/grpc"
@@ -55,8 +56,21 @@ func NewCluster(tracer trace.Tracer, tel *telemetry.Client, endpoint string, end
 		endpointBaseUrl = fmt.Sprintf("http://%s", endpoint)
 	}
 
+	// DETAILED LOGGING: Log cluster endpoint configuration
+	zap.L().Info("Initializing cluster HTTP client",
+		zap.String("cluster_id", clusterID.String()),
+		zap.String("endpoint", endpoint),
+		zap.String("endpoint_url", endpointBaseUrl),
+		zap.Bool("endpoint_tls", endpointTLS),
+	)
+
 	httpClient, err := api.NewClientWithResponses(endpointBaseUrl, clientAuthMiddleware)
 	if err != nil {
+		zap.L().Error("Failed to create cluster HTTP client",
+			zap.String("cluster_id", clusterID.String()),
+			zap.String("endpoint_url", endpointBaseUrl),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("failed to create http client: %w", err)
 	}
 

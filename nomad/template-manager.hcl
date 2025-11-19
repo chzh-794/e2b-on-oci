@@ -1,5 +1,5 @@
 job "template-manager" {
-  datacenters = ["ap-osaka-1"]
+  datacenters = ["us-ashburn-1"]
   type        = "service"
   priority    = 70
   meta = {

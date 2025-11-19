@@ -109,7 +109,9 @@ fi
 
 export NOMAD_ADDR
 
-JOBS=(orchestrator template-manager api client-proxy)
+# NOTE: template-manager runs as systemd service, not Nomad job
+# It should be checked separately via systemctl status template-manager
+JOBS=(orchestrator api client-proxy)
 overall_rc=0
 
 for job in "\${JOBS[@]}"; do
@@ -236,6 +238,20 @@ echo ""
 echo "== Nomad server health =="
 ssh_jump "${API_HOST}" "curl -sf ${NOMAD_HTTP}/v1/status/leader && echo '✓ Leader: OK' || echo '✗ Leader check failed'"
 ssh_jump "${API_HOST}" "curl -sf ${NOMAD_HTTP}/v1/status/peers && echo '✓ Peers: OK' || echo '✗ Peers check failed'"
+echo ""
+
+echo "== Template Manager service health (systemd) =="
+if ssh_jump "${CLIENT_POOL_PRIVATE}" 'systemctl is-active template-manager >/dev/null 2>&1'; then
+  echo "✓ Template Manager systemd service: OK"
+  # Check Consul registration
+  if ssh_jump "${CLIENT_POOL_PRIVATE}" 'consul catalog services 2>/dev/null | grep -q template-manager'; then
+    echo "✓ Template Manager registered in Consul: OK"
+  else
+    echo "✗ Template Manager not registered in Consul"
+  fi
+else
+  echo "✗ Template Manager systemd service: FAILED"
+fi
 echo ""
 
 echo "== API service health =="

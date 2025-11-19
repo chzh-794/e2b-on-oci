@@ -65,6 +65,26 @@ fi
 INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.id')
 REGION=$(echo "$INSTANCE_JSON" | jq -r '.region')
 REGION=${REGION_OVERRIDE:-$REGION}
+
+normalize_region() {
+  local value="$1"
+  case "$value" in
+    iad|IAD)
+      echo "us-ashburn-1"
+      ;;
+    phx|PHX)
+      echo "us-phoenix-1"
+      ;;
+    fra|FRA)
+      echo "eu-frankfurt-1"
+      ;;
+    *)
+      echo "$value"
+      ;;
+  esac
+}
+
+REGION=$(normalize_region "$REGION")
 PRIVATE_IP=$(metadata "vnics/0/privateIp")
 
 rm -rf "$CONSUL_DATA_DIR"

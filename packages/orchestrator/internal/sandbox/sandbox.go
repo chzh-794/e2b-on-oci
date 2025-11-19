@@ -179,26 +179,56 @@ func CreateSandbox(
 
 	ips := <-ipsCh
 	if ips.err != nil {
-		zap.L().Error("Failed to get network slot from channel", zap.Error(ips.err))
+		// DETAILED LOGGING: Enhanced error context for network slot acquisition failures
+		zap.L().Error("Failed to get network slot from channel",
+			zap.String("sandbox_id", config.SandboxId),
+			zap.String("template_id", config.TemplateId),
+			zap.String("error_type", fmt.Sprintf("%T", ips.err)),
+			zap.String("error_message", ips.err.Error()),
+			zap.Error(ips.err),
+			zap.Stack("stack_trace"),
+		)
 		return nil, cleanup, fmt.Errorf("failed to get network slot: %w", ips.err)
 	}
 	zap.L().Info("Network slot acquired successfully", 
 		zap.String("namespace", ips.slot.NamespaceID()),
 		zap.String("sandbox_id", config.SandboxId))
 	
-	// Verify namespace file exists before creating Firecracker process
+	// DETAILED LOGGING: Verify namespace file exists before creating Firecracker process
 	nsPath := fmt.Sprintf("/var/run/netns/%s", ips.slot.NamespaceID())
+	zap.L().Info("Verifying namespace file before Firecracker creation",
+		zap.String("namespace", ips.slot.NamespaceID()),
+		zap.String("path", nsPath),
+		zap.String("sandbox_id", config.SandboxId),
+	)
 	if _, err := os.Stat(nsPath); err != nil {
+		// DETAILED LOGGING: Enhanced error context for missing namespace file
 		zap.L().Error("Namespace file missing before Firecracker creation", 
 			zap.String("namespace", ips.slot.NamespaceID()),
 			zap.String("path", nsPath),
-			zap.Error(err))
+			zap.String("sandbox_id", config.SandboxId),
+			zap.String("template_id", config.TemplateId),
+			zap.String("error_type", fmt.Sprintf("%T", err)),
+			zap.String("error_message", err.Error()),
+			zap.Error(err),
+			zap.Stack("stack_trace"),
+		)
 		return nil, cleanup, fmt.Errorf("namespace file not found: %s: %w", nsPath, err)
 	}
 	zap.L().Info("Namespace file verified before Firecracker creation", 
 		zap.String("namespace", ips.slot.NamespaceID()),
-		zap.String("path", nsPath))
+		zap.String("path", nsPath),
+		zap.String("sandbox_id", config.SandboxId))
 	
+	// DETAILED LOGGING: Log Firecracker process creation parameters
+	zap.L().Info("Creating Firecracker process",
+		zap.String("sandbox_id", config.SandboxId),
+		zap.String("template_id", config.TemplateId),
+		zap.String("namespace", ips.slot.NamespaceID()),
+		zap.String("rootfs_path", rootfsPath),
+		zap.String("base_template_id", config.BaseTemplateId),
+		zap.String("build_id", config.BuildId),
+	)
 	fcHandle, err := fc.NewProcess(
 		childCtx,
 		tracer,
@@ -209,8 +239,24 @@ func CreateSandbox(
 		config.BuildId,
 	)
 	if err != nil {
+		// DETAILED LOGGING: Enhanced error context for Firecracker process creation failures
+		zap.L().Error("Failed to create Firecracker process",
+			zap.String("sandbox_id", config.SandboxId),
+			zap.String("template_id", config.TemplateId),
+			zap.String("namespace", ips.slot.NamespaceID()),
+			zap.String("rootfs_path", rootfsPath),
+			zap.String("error_type", fmt.Sprintf("%T", err)),
+			zap.String("error_message", err.Error()),
+			zap.Error(err),
+			zap.Stack("stack_trace"),
+		)
 		return nil, cleanup, fmt.Errorf("failed to init FC: %w", err)
 	}
+	
+	zap.L().Info("Firecracker process created successfully",
+		zap.String("sandbox_id", config.SandboxId),
+		zap.String("template_id", config.TemplateId),
+	)
 
 	telemetry.ReportEvent(childCtx, "created fc client")
 

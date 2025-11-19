@@ -80,8 +80,13 @@ if [[ -z "$INSTANCE_JSON" ]]; then
 fi
 
 INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.id')
-REGION=$(echo "$INSTANCE_JSON" | jq -r '.region')
-REGION=${REGION_OVERRIDE:-$REGION}
+# Use canonicalRegionName (e.g., us-ashburn-1) so clients match server config.
+# Fall back to short region (iad, phx, etc.) only if canonical name is unavailable.
+CANONICAL_REGION=$(echo "$INSTANCE_JSON" | jq -r '.canonicalRegionName // empty')
+if [[ -z "$CANONICAL_REGION" || "$CANONICAL_REGION" == "null" ]]; then
+  CANONICAL_REGION=$(echo "$INSTANCE_JSON" | jq -r '.region')
+fi
+REGION=${REGION_OVERRIDE:-$CANONICAL_REGION}
 PRIVATE_IP=$(metadata "vnics/0/privateIp")
 
 mkdir -p "$NOMAD_CONFIG_DIR" "$NOMAD_DATA_DIR"
@@ -194,7 +199,7 @@ cat >"$NOMAD_SERVICE_PATH" <<EOF
 [Unit]
 Description=HashiCorp Nomad Client
 Documentation=https://www.nomadproject.io/docs/
-After=network-online.target consul.service
+After=network-online.target consul.service cloud-final.service
 Wants=network-online.target
 
 [Service]
@@ -209,6 +214,18 @@ Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
+EOF
+
+# Allow Nomad tasks (orchestrator/template builds) to access /dev/nbd*, /dev/loop*
+# Without this, newer OCI kernels return EPERM when Firecracker opens NBD devices.
+mkdir -p /etc/systemd/system/nomad.service.d
+cat >/etc/systemd/system/nomad.service.d/10-e2b-devices.conf <<'EOF'
+[Service]
+DevicePolicy=auto
+DeviceAllow=block-43:* rwm     # /dev/nbd*
+DeviceAllow=block-7:* rwm      # /dev/loop*
+DeviceAllow=char-10:237 rwm    # /dev/loop-control
+DeviceAllow=char-10:200 rwm    # /dev/net/tun (tap creation)
 EOF
 
 systemctl daemon-reload

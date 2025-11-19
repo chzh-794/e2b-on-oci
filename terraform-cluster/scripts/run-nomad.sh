@@ -68,8 +68,13 @@ if [[ -z "$INSTANCE_JSON" ]]; then
 fi
 
 INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.id')
-REGION=$(echo "$INSTANCE_JSON" | jq -r '.region')
-REGION=${REGION_OVERRIDE:-$REGION}
+# Use canonicalRegionName (e.g., us-ashburn-1) to keep region/datacenter aligned
+# across servers and clients. Fall back to short region code if canonical is missing.
+CANONICAL_REGION=$(echo "$INSTANCE_JSON" | jq -r '.canonicalRegionName // empty')
+if [[ -z "$CANONICAL_REGION" || "$CANONICAL_REGION" == "null" ]]; then
+  CANONICAL_REGION=$(echo "$INSTANCE_JSON" | jq -r '.region')
+fi
+REGION=${REGION_OVERRIDE:-$CANONICAL_REGION}
 PRIVATE_IP=$(metadata "vnics/0/privateIp")
 
 mkdir -p "$NOMAD_CONFIG_DIR" "$NOMAD_DATA_DIR"
@@ -164,7 +169,7 @@ cat >"$NOMAD_SERVICE_PATH" <<EOF
 [Unit]
 Description=HashiCorp Nomad
 Documentation=https://www.nomadproject.io/docs/
-After=network-online.target consul.service
+After=network-online.target consul.service cloud-final.service
 Wants=network-online.target
 
 [Service]

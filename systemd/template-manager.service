@@ -1,0 +1,29 @@
+[Unit]
+Description=E2B Template Manager
+Documentation=https://github.com/e2b-dev/infra
+After=network-online.target consul.service
+Wants=network-online.target
+Requires=consul.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/e2b
+EnvironmentFile=-/opt/e2b/template-manager.env
+# NODE_ID will be set dynamically from instance metadata or hostname
+ExecStartPre=/bin/bash -c 'if [ -z "$NODE_ID" ]; then export NODE_ID=$(curl -sSL -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/id 2>/dev/null || hostname); fi'
+ExecStart=/bin/bash -c 'cd /opt/e2b && export NODE_ID=${NODE_ID:-$(hostname)} && set -a && source template-manager.env && set +a && exec ./bin/template-manager --port 5009 --proxy-port 15007'
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+# Security: Allow loop device operations (needed for template builds)
+# No PrivateDevices - we need /dev/loop-control access
+# No NoNewPrivileges - we may need capability escalation
+
+[Install]
+WantedBy=multi-user.target
+

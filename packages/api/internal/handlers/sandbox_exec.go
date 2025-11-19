@@ -90,6 +90,15 @@ func (a *APIStore) PostSandboxesSandboxIDExec(c *gin.Context, sandboxID string) 
 
 	edgeResp, err := cluster.GetHttpClient().V1SandboxExecWithResponse(ctx, sandboxID, edgeapi.V1SandboxExecJSONRequestBody(edgeBody))
 	if err != nil {
+		// DETAILED LOGGING: Capture full error context for debugging
+		zap.L().Error("sandbox exec edge call failed - detailed error report",
+			zap.String("sandbox_id", sandboxID),
+			zap.String("cluster_id", cluster.ID.String()),
+			zap.String("error_message", err.Error()),
+			zap.String("error_type", fmt.Sprintf("%T", err)),
+			zap.Error(err),
+			zap.Stack("stack_trace"),
+		)
 		a.sendAPIStoreError(c, http.StatusBadGateway, "Failed to reach sandbox edge service")
 		telemetry.ReportCriticalError(ctx, "sandbox exec edge call failed", err, telemetry.WithSandboxID(sandboxID))
 		return
@@ -161,9 +170,34 @@ func (a *APIStore) PostSandboxesSandboxIDExec(c *gin.Context, sandboxID string) 
 		return
 
 	default:
-		msg := edgeResp.Status()
-		telemetry.ReportCriticalError(ctx, "sandbox exec upstream failure", fmt.Errorf(msg), telemetry.WithSandboxID(sandboxID))
-		a.sendAPIStoreError(c, http.StatusInternalServerError, msg)
+		// DETAILED LOGGING: Capture full error context for unexpected status codes
+		statusCode := edgeResp.StatusCode()
+		statusText := edgeResp.Status()
+		
+		// Try to extract error message from response body
+		var errorMsg string
+		if edgeResp.JSON500 != nil {
+			errorMsg = edgeResp.JSON500.Message
+		} else {
+			// For other status codes, try to read from body if available
+			if edgeResp.Body != nil && len(edgeResp.Body) > 0 {
+				errorMsg = string(edgeResp.Body)
+			} else {
+				errorMsg = statusText
+			}
+		}
+		
+		zap.L().Error("sandbox exec upstream failure - unexpected status code",
+			zap.String("sandbox_id", sandboxID),
+			zap.String("cluster_id", cluster.ID.String()),
+			zap.Int("status_code", statusCode),
+			zap.String("status_text", statusText),
+			zap.String("error_message", errorMsg),
+			zap.Stack("stack_trace"),
+		)
+		
+		telemetry.ReportCriticalError(ctx, "sandbox exec upstream failure", fmt.Errorf("status %d: %s", statusCode, errorMsg), telemetry.WithSandboxID(sandboxID))
+		a.sendAPIStoreError(c, http.StatusInternalServerError, errorMsg)
 		return
 	}
 }

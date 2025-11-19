@@ -144,7 +144,7 @@ func (a *APIStore) PostTemplatesTemplateIDBuildsBuildID(c *gin.Context, template
 		return
 	}
 	
-	zap.L().Info("检查到并发运行的构建", 
+	zap.L().Info("Detected concurrent running builds", 
 		zap.String("templateID", templateID), 
 		zap.Int("concurrentBuildsCount", len(concurrentlyRunningBuilds)))
 
@@ -192,7 +192,7 @@ func (a *APIStore) PostTemplatesTemplateIDBuildsBuildID(c *gin.Context, template
 	// This is allowed - getBuilderClient will fallback to local template manager
 
 	// Call the Template Manager to build the environment
-	zap.L().Info("开始创建模板", 
+	zap.L().Info("Starting template creation", 
 		zap.String("templateID", templateID), 
 		zap.String("buildID", buildUUID.String()), 
 		zap.String("kernelVersion", build.KernelVersion), 
@@ -216,7 +216,7 @@ func (a *APIStore) PostTemplatesTemplateIDBuildsBuildID(c *gin.Context, template
 	)
 
 	if buildErr != nil {
-		zap.L().Error("创建模板失败", 
+		zap.L().Error("Failed to create template", 
 			zap.String("templateID", templateID), 
 			zap.String("buildID", buildUUID.String()), 
 			zap.Error(buildErr))
@@ -229,7 +229,7 @@ func (a *APIStore) PostTemplatesTemplateIDBuildsBuildID(c *gin.Context, template
 			fmt.Sprintf("error when building env: %s", buildErr),
 		)
 		if err != nil {
-			zap.L().Error("设置构建状态失败", 
+			zap.L().Error("Failed to set build status", 
 				zap.String("templateID", templateID), 
 				zap.String("buildID", buildUUID.String()), 
 				zap.Error(err))

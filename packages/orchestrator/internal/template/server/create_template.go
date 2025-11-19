@@ -102,6 +102,16 @@ func (s *ServerStore) TemplateCreate(ctx context.Context, templateRequest *templ
 }
 
 func (s *ServerStore) reportBuildFailed(ctx context.Context, config *build.TemplateConfig, err error) {
+	// DETAILED LOGGING: Capture full error context for debugging
+	s.logger.Error("Template build failed - detailed error report",
+		zap.String("template_id", config.TemplateId),
+		zap.String("build_id", config.BuildId),
+		zap.String("error_message", err.Error()),
+		zap.String("error_type", fmt.Sprintf("%T", err)),
+		zap.Error(err),
+		zap.Stack("stack_trace"),
+	)
+	
 	telemetry.ReportCriticalError(ctx, "error while building template", err)
 	cacheErr := s.buildCache.SetFailed(config.BuildId)
 	if cacheErr != nil {

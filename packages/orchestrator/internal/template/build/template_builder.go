@@ -145,6 +145,7 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 		)
 		return nil, fmt.Errorf("error creating template build directory: %w", err)
 	}
+
 	defer func() {
 		// Temporarily disabled cleanup to capture provisioned rootfs for OCI POC
 		// err := os.RemoveAll(templateBuildDir)
@@ -257,6 +258,17 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 	postProcessor.WriteMsg("Creating sandbox template")
 	postProcessor.WriteMsg(fmt.Sprintf("Using init script %s for template sandbox", systemdInitPath))
 	zap.L().Info("template sandbox init script", zap.String("path", systemdInitPath))
+	
+	// DETAILED LOGGING: Log sandbox creation parameters
+	b.logger.Info("Creating sandbox for template build",
+		zap.String("template_id", template.TemplateFiles.TemplateId),
+		zap.String("build_id", template.TemplateFiles.BuildId),
+		zap.String("rootfs_path", rootfsPath),
+		zap.Int64("vcpu", template.VCpuCount),
+		zap.Int64("memory_mb", template.MemoryMB),
+		zap.String("envd_version", envdVersion),
+	)
+	
 	sbx, cleanup, err := sandbox.CreateSandbox(
 		ctx,
 		b.tracer,
@@ -280,14 +292,25 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 		}
 	}()
 	if err != nil {
+		// DETAILED LOGGING: Enhanced error context for sandbox creation failures
 		b.logger.Error("template build failed: error creating sandbox",
 			zap.String("template_id", template.TemplateFiles.TemplateId),
 			zap.String("build_id", template.TemplateFiles.BuildId),
 			zap.String("rootfs_path", rootfsPath),
+			zap.String("error_type", fmt.Sprintf("%T", err)),
+			zap.String("error_message", err.Error()),
 			zap.Error(err),
+			zap.Stack("stack_trace"),
 		)
 		return nil, fmt.Errorf("error creating sandbox: %w", err)
 	}
+	
+	// DETAILED LOGGING: Log successful sandbox creation
+	b.logger.Info("Sandbox created successfully",
+		zap.String("template_id", template.TemplateFiles.TemplateId),
+		zap.String("build_id", template.TemplateFiles.BuildId),
+		zap.String("sandbox_id", sbx.Metadata.Config.SandboxId),
+	)
 	err = sbx.WaitForEnvd(
 		ctx,
 		b.tracer,

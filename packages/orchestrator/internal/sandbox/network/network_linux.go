@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"runtime"
 
 	"github.com/coreos/go-iptables/iptables"
@@ -16,6 +17,13 @@ import (
 )
 
 func (s *Slot) CreateNetwork() error {
+	// DETAILED LOGGING: Log network namespace creation start
+	zap.L().Info("[network] Starting network namespace creation",
+		zap.String("namespace_id", s.NamespaceID()),
+		zap.String("veth_name", s.VethName()),
+		zap.String("vpeer_name", s.VpeerName()),
+	)
+	
 	// Prevent thread changes so we can safely manipulate with namespaces
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -23,6 +31,10 @@ func (s *Slot) CreateNetwork() error {
 	// Save the original (host) namespace and restore it upon function exit
 	hostNS, err := netns.Get()
 	if err != nil {
+		zap.L().Error("[network] Failed to get current (host) namespace",
+			zap.String("namespace_id", s.NamespaceID()),
+			zap.Error(err),
+		)
 		return fmt.Errorf("cannot get current (host) namespace: %w", err)
 	}
 
@@ -38,10 +50,46 @@ func (s *Slot) CreateNetwork() error {
 		}
 	}()
 
+	// DETAILED LOGGING: Check /run/netns before creating namespace
+	nsPath := fmt.Sprintf("/var/run/netns/%s", s.NamespaceID())
+	if _, err := os.Stat("/var/run/netns"); err != nil {
+		zap.L().Error("[network] /var/run/netns directory does not exist or is not accessible",
+			zap.String("namespace_id", s.NamespaceID()),
+			zap.Error(err),
+		)
+	}
+	
 	// Create NS for the sandbox
+	zap.L().Info("[network] Creating named network namespace",
+		zap.String("namespace_id", s.NamespaceID()),
+		zap.String("expected_path", nsPath),
+	)
 	ns, err := netns.NewNamed(s.NamespaceID())
 	if err != nil {
+		// DETAILED LOGGING: Enhanced error context for namespace creation failures
+		zap.L().Error("[network] Failed to create named network namespace",
+			zap.String("namespace_id", s.NamespaceID()),
+			zap.String("expected_path", nsPath),
+			zap.String("error_type", fmt.Sprintf("%T", err)),
+			zap.String("error_message", err.Error()),
+			zap.Error(err),
+			zap.Stack("stack_trace"),
+		)
 		return fmt.Errorf("cannot create new namespace: %w", err)
+	}
+	
+	// DETAILED LOGGING: Verify namespace file was created
+	if _, err := os.Stat(nsPath); err != nil {
+		zap.L().Warn("[network] Namespace file not found after creation",
+			zap.String("namespace_id", s.NamespaceID()),
+			zap.String("path", nsPath),
+			zap.Error(err),
+		)
+	} else {
+		zap.L().Info("[network] Namespace file created successfully",
+			zap.String("namespace_id", s.NamespaceID()),
+			zap.String("path", nsPath),
+		)
 	}
 
 	// Store the namespace handle in the Slot to keep it alive.

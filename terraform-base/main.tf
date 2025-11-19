@@ -25,7 +25,7 @@ provider "oci" {
 # Provider for home region (IAM resources must be created in home region)
 provider "oci" {
   alias  = "home"
-  region = "us-phoenix-1"
+  region = "us-ashburn-1"
   # OCI Resource Manager injects auth via InstancePrincipal
 }
 

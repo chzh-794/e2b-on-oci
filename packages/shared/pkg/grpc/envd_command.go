@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 
 	"connectrpc.com/connect"
 
@@ -20,20 +21,37 @@ func StreamToChannel[Res any](ctx context.Context, stream *connect.ServerStreamF
 		defer close(out)
 		defer close(errCh)
 
+		receiveCount := 0
+		fmt.Fprintf(os.Stderr, "[StreamToChannel] Starting receive loop\n")
+		
 		for stream.Receive() {
+			receiveCount++
+			if receiveCount%10 == 0 {
+				fmt.Fprintf(os.Stderr, "[StreamToChannel] Received %d messages\n", receiveCount)
+			}
+			
 			select {
 			case <-ctx.Done():
 				// Context canceled, exit the goroutine
+				fmt.Fprintf(os.Stderr, "[StreamToChannel] Context cancelled, exiting\n")
 				return
 			case out <- stream.Msg():
 				// Send the message to the channel
+				if receiveCount <= 5 {
+					fmt.Fprintf(os.Stderr, "[StreamToChannel] Sent message %d to channel\n", receiveCount)
+				}
 			}
 		}
 
+		fmt.Fprintf(os.Stderr, "[StreamToChannel] stream.Receive() returned false, loop exited. Total messages: %d\n", receiveCount)
+
 		if err := stream.Err(); err != nil {
+			fmt.Fprintf(os.Stderr, "[StreamToChannel] Stream error: %v\n", err)
 			errCh <- err
 			return
 		}
+		
+		fmt.Fprintf(os.Stderr, "[StreamToChannel] Stream closed normally, no error\n")
 	}()
 
 	return out, errCh

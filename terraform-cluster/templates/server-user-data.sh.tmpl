@@ -12,6 +12,11 @@ echo "Compartment: ${compartment_id}"
 echo "Region: ${region}"
 echo "================================================================================"
 
+# Wait for apt locks to be released (cloud-init may be running other apt operations)
+while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 2; done
+while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
+while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 2; done
+
 sudo apt-get update -y
 sudo apt-get install -y python3-pip jq gzip
 pip3 install --upgrade oci-cli
