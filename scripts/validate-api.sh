@@ -11,6 +11,29 @@ if [[ ! -f "${CONFIG_FILE}" ]]; then
   exit 1
 fi
 
+set -a
+# shellcheck disable=SC1090
+source "${CONFIG_FILE}"
+set +a
+
+# Always refresh API credentials from database to ensure we have the latest
+# This handles cases where:
+# - deploy-services.sh failed to export credentials (silent failure)
+# - init-db.sh was run again, creating new credentials
+# - api-creds.env is stale or missing
+echo "Refreshing API credentials from database..."
+if "${REPO_ROOT}/scripts/export-api-creds.sh" >/dev/null 2>&1; then
+  echo "✓ API credentials refreshed"
+else
+  if [[ ! -f "${CREDS_FILE}" ]]; then
+    echo "api-creds.env not found and failed to export. Run ./scripts/export-api-creds.sh manually." >&2
+    exit 1
+  else
+    echo "⚠ Failed to refresh credentials, using existing api-creds.env"
+  fi
+fi
+
+# Now source the (potentially refreshed) credentials file
 if [[ ! -f "${CREDS_FILE}" ]]; then
   echo "api-creds.env not found at ${CREDS_FILE}. Run ./scripts/export-api-creds.sh first." >&2
   exit 1
@@ -19,8 +42,6 @@ fi
 command -v jq >/dev/null 2>&1 || { echo "jq is required to parse API responses. Please install jq." >&2; exit 1; }
 
 set -a
-# shellcheck disable=SC1090
-source "${CONFIG_FILE}"
 # shellcheck disable=SC1090
 source "${CREDS_FILE}"
 set +a
@@ -127,22 +148,8 @@ api_post_raw() {
   ssh_api "curl -sS -X POST -H 'X-API-Key: ${TEAM_API_KEY}' -H 'Authorization: Bearer ${ADMIN_API_TOKEN}' ${API_BASE}${path}"
 }
 
-normalize_env_schema() {
-  if [[ -z "${POSTGRES_HOST}" || -z "${POSTGRES_PASSWORD}" ]]; then
-    return
-  fi
-  ssh_api "PGPASSWORD='${POSTGRES_PASSWORD}' psql 'postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=require' <<'EOSQL'
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS dockerfile;
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS build_id;
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS vcpu;
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS ram_mb;
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS free_disk_size_mb;
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS total_disk_size_mb;
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS kernel_version;
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS firecracker_version;
-EOSQL
-" >/dev/null
-}
+# Note: Schema normalization is handled by migrations (20240315165236_create_env_builds.sql)
+# Legacy columns were moved to env_builds table, so no manual cleanup needed here.
 
 wait_for_build() {
   local template_id=$1
@@ -191,7 +198,6 @@ seed_template_image() {
 }
 
 create_template_with_build() {
-  normalize_env_schema
   local alias timestamp
   timestamp=$(date +%s)
   alias=${VALIDATION_TEMPLATE_ALIAS:-oci-validation-${timestamp}}
@@ -205,13 +211,34 @@ JSON
   echo "⇒ Creating validation template (${alias})..."
   local create_resp
   create_resp=$(api_post "/templates" "${payload}")
-  echo "${create_resp}" | jq '.'
+  
+  # Try to parse with jq, fallback to grep/sed if control characters present
+  if echo "${create_resp}" | jq -e '.' >/dev/null 2>&1; then
+    echo "${create_resp}" | jq '.'
+  else
+    echo "Response (may contain control characters):"
+    echo "${create_resp}" | head -20
+  fi
+  
   local template_id
-  template_id=$(echo "${create_resp}" | jq -r '.templateID // empty')
+  if echo "${create_resp}" | jq -e '.templateID' >/dev/null 2>&1; then
+    template_id=$(echo "${create_resp}" | jq -r '.templateID // empty')
+  else
+    # Fallback: extract templateID using grep/sed
+    template_id=$(echo "${create_resp}" | grep -oE '"templateID"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"templateID"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/' | head -1)
+  fi
+  
   local build_id
-  build_id=$(echo "${create_resp}" | jq -r '.buildID // empty')
+  if echo "${create_resp}" | jq -e '.buildID' >/dev/null 2>&1; then
+    build_id=$(echo "${create_resp}" | jq -r '.buildID // empty')
+  else
+    # Fallback: extract buildID using grep/sed
+    build_id=$(echo "${create_resp}" | grep -oE '"buildID"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"buildID"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/' | head -1)
+  fi
+  
   if [[ -z "${template_id}" || -z "${build_id}" || "${template_id}" == "null" || "${build_id}" == "null" ]]; then
-    echo "Failed to create template." >&2
+    echo "Failed to create template. Response:" >&2
+    echo "${create_resp}" | head -20 >&2
     exit 1
   fi
   run_client_cleanup

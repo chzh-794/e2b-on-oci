@@ -56,7 +56,7 @@ job "template-manager" {
         command = "/bin/bash"
         args    = [
           "-lc",
-          "cd /opt/e2b && set -a && source template-manager.env && set +a && ./bin/template-manager --port 5009 --proxy-port 15007"
+          "cd /opt/e2b && export NODE_ID=\"${NODE_ID}\" && set -a && source template-manager.env && set +a && ./bin/template-manager --port 5009 --proxy-port 15007"
         ]
       }
     }

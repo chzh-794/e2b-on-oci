@@ -542,6 +542,7 @@ sudo setcap cap_sys_admin+ep /usr/bin/unshare || true
 sudo setcap cap_sys_admin+ep /usr/bin/bash || true
 sudo setcap cap_sys_admin+ep /usr/bin/ip || true
 
+
 # Load NBD kernel module
 sudo modprobe nbd max_part=16 || true
 echo "✓ NBD module loaded"
@@ -1007,4 +1008,5 @@ echo "    Password: ${POSTGRES_PASSWORD}"
 echo ""
 echo "  Redis: ${REDIS_ENDPOINT}:${REDIS_PORT}"
 echo ""
+
 

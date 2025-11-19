@@ -75,11 +75,11 @@ func Mount(ctx context.Context, tracer trace.Tracer, rootfsPath string, mountPoi
 	return nil
 }
 
-func Unmount(ctx context.Context, tracer trace.Tracer, rootfsPath string) error {
+func Unmount(ctx context.Context, tracer trace.Tracer, mountPoint string) error {
 	ctx, unmountSpan := tracer.Start(ctx, "unmount-ext4")
 	defer unmountSpan.End()
 
-	cmd := exec.CommandContext(ctx, "umount", rootfsPath)
+	cmd := exec.CommandContext(ctx, "umount", mountPoint)
 
 	unmountStdoutWriter := telemetry.NewEventWriter(ctx, "stdout")
 	cmd.Stdout = unmountStdoutWriter

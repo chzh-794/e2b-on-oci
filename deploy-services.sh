@@ -96,7 +96,13 @@ ssh "${BASTION_SSH_OPTS[@]}" ${SSH_USER}@${BASTION_HOST} <<EOF
 export NOMAD_BIN="${NOMAD_BIN_REMOTE}"
 export NOMAD_ADDR="${NOMAD_ADDR_REMOTE}"
 cd ~/nomad
-\$NOMAD_BIN job stop -purge orchestrator >/dev/null 2>&1 || true
+# Always stop-purge-run to ensure clean state and pick up new binaries, config, and infrastructure changes
+if \$NOMAD_BIN job status orchestrator >/dev/null 2>&1; then
+  echo "Stopping and purging existing orchestrator job..."
+  \$NOMAD_BIN job stop -purge orchestrator || true
+  sleep 2
+fi
+echo "Deploying orchestrator job..."
 \$NOMAD_BIN job run orchestrator.hcl
 sleep 3
 echo ""
@@ -112,7 +118,13 @@ ssh "${BASTION_SSH_OPTS[@]}" ${SSH_USER}@${BASTION_HOST} <<EOF
 export NOMAD_BIN="${NOMAD_BIN_REMOTE}"
 export NOMAD_ADDR="${NOMAD_ADDR_REMOTE}"
 cd ~/nomad
-\$NOMAD_BIN job stop -purge template-manager >/dev/null 2>&1 || true
+# Always stop-purge-run to ensure clean state and pick up new binaries, config, and infrastructure changes (e.g., disk group for loop devices)
+if \$NOMAD_BIN job status template-manager >/dev/null 2>&1; then
+  echo "Stopping and purging existing template-manager job..."
+  \$NOMAD_BIN job stop -purge template-manager || true
+  sleep 2
+fi
+echo "Deploying template-manager job..."
 \$NOMAD_BIN job run template-manager.hcl
 sleep 3
 echo ""
@@ -145,7 +157,13 @@ ssh "${BASTION_SSH_OPTS[@]}" ${SSH_USER}@${BASTION_HOST} <<EOF
 export NOMAD_BIN="${NOMAD_BIN_REMOTE}"
 export NOMAD_ADDR="${NOMAD_ADDR_REMOTE}"
 cd ~/nomad
-\$NOMAD_BIN job stop -purge api >/dev/null 2>&1 || true
+# Always stop-purge-run to ensure clean state and pick up new binaries, config, and infrastructure changes
+if \$NOMAD_BIN job status api >/dev/null 2>&1; then
+  echo "Stopping and purging existing api job..."
+  \$NOMAD_BIN job stop -purge api || true
+  sleep 2
+fi
+echo "Deploying api job..."
 \$NOMAD_BIN job run api.hcl
 sleep 3
 echo ""
@@ -162,7 +180,13 @@ set -e
 export NOMAD_BIN="${NOMAD_BIN_REMOTE}"
 export NOMAD_ADDR="${NOMAD_ADDR_REMOTE}"
 cd ~/nomad
-\$NOMAD_BIN job stop -purge client-proxy >/dev/null 2>&1 || true
+# Always stop-purge-run to ensure clean state and pick up new binaries, config, and infrastructure changes
+if \$NOMAD_BIN job status client-proxy >/dev/null 2>&1; then
+  echo "Stopping and purging existing client-proxy job..."
+  \$NOMAD_BIN job stop -purge client-proxy || true
+  sleep 2
+fi
+echo "Deploying client-proxy job..."
 \$NOMAD_BIN job run client-proxy.hcl
 echo ""
 echo "Waiting for client-proxy to be placed (up to 60s)..."
@@ -254,9 +278,13 @@ PY
   if [ "\${job_missing}" = "true" ]; then
     echo "  Redeploying \${job}..."
     cd ~/nomad
-    \$NOMAD_BIN job stop -purge "\${job}" >/dev/null 2>&1 || true
+    # Always stop-purge-run to ensure clean state
+    if \$NOMAD_BIN job status "\${job}" >/dev/null 2>&1; then
+      \$NOMAD_BIN job stop -purge "\${job}" || true
+      sleep 2
+    fi
     \$NOMAD_BIN job run "\${job}.hcl" || {
-      echo "  ERROR: Failed to redeploy \${job}"
+      echo "  ERROR: Failed to deploy \${job}"
       overall_rc=1
       continue
     }
@@ -351,20 +379,6 @@ if [[ $rc -ne 0 ]]; then
   exit $rc
 fi
 
-# Export API credentials automatically after successful deployment
-echo -e "\n${GREEN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}Exporting API credentials${NC}"
-echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
-
-# Temporarily disable exit on error for credential export (non-critical)
-set +e
-if "${SCRIPT_DIR}/scripts/export-api-creds.sh" >/dev/null 2>&1; then
-  echo "✓ API credentials exported to api-creds.env"
-  echo "  You can now run: ./scripts/validate-api.sh"
-else
-  echo -e "${YELLOW}⚠ Failed to export API credentials.${NC}"
-  echo -e "${YELLOW}  This may be because the database is not initialized yet.${NC}"
-  echo -e "${YELLOW}  Run ./scripts/export-api-creds.sh manually after database is ready.${NC}"
-fi
-set -e
+# Note: API credentials are automatically refreshed by validate-api.sh when needed
+# If you need credentials before running validate-api.sh, run: ./scripts/export-api-creds.sh
 

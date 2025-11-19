@@ -157,7 +157,7 @@ After `deploy-poc.sh` finishes, push the service jobs into the Nomad cluster:
 
 `deploy-services.sh` copies the job specifications to the server pool, runs `nomad job run` for orchestrator, api, client-proxy, and template-manager, and then prints a **summary for all four critical jobs**. It exits with code 1 if any of them has no running allocations so you can fail fast.
 
-**After successful deployment, `deploy-services.sh` automatically exports API credentials** to `api-creds.env` (required for validation scripts). If credential export fails (e.g., database not ready), it shows a warning but doesn't fail the deployment.
+**API credentials are automatically refreshed by `validate-api.sh`** when you run validation. If you need credentials before running validation, run `./scripts/export-api-creds.sh` manually.
 
 `scripts/check-post-deploy.sh` performs comprehensive post-deployment verification:
 - **Critical Nomad Jobs**: Verifies `orchestrator`, `template-manager`, `api`, and `client-proxy` all have running allocations
@@ -166,7 +166,7 @@ After `deploy-poc.sh` finishes, push the service jobs into the Nomad cluster:
 - **Infrastructure**: Nomad server health, Consul service discovery and agent health, PostgreSQL connectivity
 - **Consul Health**: Verifies Consul agents are healthy on both API and client pools
 - **Node Status**: Shows all Nomad nodes with their classes and status
-- **Template Builders**: Checks for available template builders (requires `api-creds.env`, automatically exported by `deploy-services.sh`)
+- **Template Builders**: Checks for available template builders (requires `api-creds.env`, automatically refreshed by `validate-api.sh`)
 - **Summary**: Provides a clear pass/fail summary with counts and specific failed/warned items
 
 The script exits with code 1 if any critical job is unhealthy, making it suitable for CI/CD pipelines.

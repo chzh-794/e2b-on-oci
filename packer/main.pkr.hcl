@@ -196,6 +196,16 @@ build {
       # Increase connection tracking
       "echo 'net.netfilter.nf_conntrack_max = 2097152' | sudo tee -a /etc/sysctl.conf",
       
+      # Configure loop.max_loop=32 for template builds
+      # OCI default is 8, which is too low when snapd uses 8+ devices
+      # The loop module is builtin, so we must set it via GRUB kernel parameter
+      "if ! grep -q 'loop.max_loop' /etc/default/grub 2>/dev/null; then",
+      "  sudo sed -i 's/^GRUB_CMDLINE_LINUX=\"\\(.*\\)\"/GRUB_CMDLINE_LINUX=\"\\1 loop.max_loop=32\"/' /etc/default/grub ||",
+      "  sudo sed -i 's/^GRUB_CMDLINE_LINUX=\\(.*\\)/GRUB_CMDLINE_LINUX=\"\\1 loop.max_loop=32\"/' /etc/default/grub ||",
+      "  echo 'GRUB_CMDLINE_LINUX=\"loop.max_loop=32\"' | sudo tee -a /etc/default/grub >/dev/null",
+      "fi",
+      "sudo update-grub",
+      
       # Apply sysctl settings
       "sudo sysctl -p"
     ]

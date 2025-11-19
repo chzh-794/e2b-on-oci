@@ -52,20 +52,9 @@ fi
 
 echo ""
 
-# Ensure legacy columns are dropped so the API schema matches the database
-echo "Step 1b: Normalizing template schema..."
-psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" <<'SQL'
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS dockerfile;
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS build_id;
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS vcpu;
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS ram_mb;
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS free_disk_size_mb;
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS total_disk_size_mb;
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS kernel_version;
-ALTER TABLE IF EXISTS public.envs DROP COLUMN IF EXISTS firecracker_version;
-SQL
-echo "✓ Schema normalized"
-echo ""
+# Note: Legacy columns (dockerfile, build_id, vcpu, ram_mb, etc.) were moved to env_builds table
+# by migration 20240315165236_create_env_builds.sql, so they no longer exist in envs table.
+# This is expected and correct.
 
 # Step 2: Seed database with test user/team
 echo "Step 2: Seeding database with test user and team..."

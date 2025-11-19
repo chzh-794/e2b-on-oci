@@ -88,7 +88,15 @@ func run(port, proxyPort uint) (success bool) {
 	// Check if the orchestrator crashed and restarted
 	// Skip this check in development mode
 	// We don't want to lock if the service is running with force stop; the subsequent start would fail.
-	if !env.IsDevelopment() && !forceStop {
+	// Only create lock file if orchestrator service is enabled (not for template-manager)
+	hasOrchestrator := false
+	for _, s := range services {
+		if s == service.Orchestrator {
+			hasOrchestrator = true
+			break
+		}
+	}
+	if !env.IsDevelopment() && !forceStop && hasOrchestrator {
 		info, err := os.Stat(lockPath)
 		if err == nil {
 			log.Fatalf("Orchestrator was already started at %s, exiting", info.ModTime())

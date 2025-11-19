@@ -137,6 +137,7 @@ for job in "\${JOBS[@]}"; do
     continue
   fi
   
+  set +e  # Temporarily disable exit on error to capture Python exit code
   python3 - "\${job}" "\${JSON_FILE}" <<'PY'
 import json
 import sys
@@ -192,6 +193,7 @@ except Exception as e:
     sys.exit(1)
 PY
   rc=$?
+  set -e  # Re-enable exit on error
   if [[ \$rc -ne 0 ]]; then
     overall_rc=1
     # Show recent allocations for failed jobs
@@ -321,8 +323,9 @@ else
   # Validate node classes match job requirements
   echo ""
   echo "Node class validation (required for job placement):"
-  API_NODE_CLASS=$(echo "${NODE_DATA}" | jq -r '.[] | select(.Status == "ready" and (.Name | contains("api"))) | .NodeClass // "none"' | head -1)
-  CLIENT_NODE_CLASS=$(echo "${NODE_DATA}" | jq -r '.[] | select(.Status == "ready" and (.Name | contains("client"))) | .NodeClass // "none"' | head -1)
+  # Filter by NodeClass directly (not by Name, since OCI node names are OCIDs)
+  API_NODE_CLASS=$(echo "${NODE_DATA}" | jq -r '.[] | select(.Status == "ready" and .NodeClass == "api") | .NodeClass' | head -1)
+  CLIENT_NODE_CLASS=$(echo "${NODE_DATA}" | jq -r '.[] | select(.Status == "ready" and .NodeClass == "client") | .NodeClass' | head -1)
   
   if [[ "${API_NODE_CLASS}" == "api" ]]; then
     echo "  ✓ API pool node.class = 'api' (required by 'api' job)"
@@ -486,8 +489,9 @@ fi
 
 # Node class validation
 NODE_DATA=$(ssh_jump "${API_HOST}" "curl -sf ${NOMAD_HTTP}/v1/nodes 2>/dev/null" || echo "")
-API_NODE_CLASS=$(echo "${NODE_DATA}" | jq -r '.[] | select(.Status == "ready" and (.Name | contains("api"))) | .NodeClass // "none"' | head -1)
-CLIENT_NODE_CLASS=$(echo "${NODE_DATA}" | jq -r '.[] | select(.Status == "ready" and (.Name | contains("client"))) | .NodeClass // "none"' | head -1)
+# Filter by NodeClass directly (not by Name, since OCI node names are OCIDs)
+API_NODE_CLASS=$(echo "${NODE_DATA}" | jq -r '.[] | select(.Status == "ready" and .NodeClass == "api") | .NodeClass' | head -1)
+CLIENT_NODE_CLASS=$(echo "${NODE_DATA}" | jq -r '.[] | select(.Status == "ready" and .NodeClass == "client") | .NodeClass' | head -1)
 
 if [[ "${API_NODE_CLASS}" == "api" ]]; then
   PASSED=$((PASSED + 1))

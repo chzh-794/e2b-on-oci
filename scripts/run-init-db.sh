@@ -51,7 +51,7 @@ quote() {
 
 EMAIL_VALUE=${EMAIL:-admin@e2b-oci-poc.local}
 
-printf -v remote_cmd 'cd /opt/e2b && %s %s %s %s %s %s %s %s %s ./db/init-db.sh' \
+printf -v remote_cmd 'cd ~/e2b && %s %s %s %s %s %s %s %s %s ./db/init-db.sh' \
   "POSTGRES_HOST=$(quote "${POSTGRES_HOST}")" \
   "POSTGRES_PORT=$(quote "${POSTGRES_PORT}")" \
   "POSTGRES_USER=$(quote "${POSTGRES_USER}")" \
