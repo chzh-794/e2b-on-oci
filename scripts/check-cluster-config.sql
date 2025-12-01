@@ -45,3 +45,4 @@ LEFT JOIN clusters c ON t.cluster_id = c.id;
 \echo ''
 \echo '════════════════════════════════════════════════════════════════'
 
+

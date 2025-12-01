@@ -28,6 +28,8 @@ packer_cache/
 # Logs
 *.log
 logs/
+# Exception: envd internal logs package (source code, not log files)
+!packages/envd/internal/logs/
 
 # OS files
 .DS_Store
