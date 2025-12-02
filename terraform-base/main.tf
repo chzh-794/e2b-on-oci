@@ -587,6 +587,7 @@ resource "oci_core_instance" "bastion" {
       UBUNTU_IMAGE_OCID  = local.ubuntu_image_id
       ARCH               = local.is_arm_shape ? "aarch64" : "x86_64"
       HASH_ARCH          = local.is_arm_shape ? "arm64" : "amd64"
+      attempt            = 0
     }))
   }
   
