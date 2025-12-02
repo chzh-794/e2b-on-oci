@@ -609,6 +609,29 @@ module "object_storage_buckets" {
 }
 
 # ===================================================================================================
+# CONTAINER REGISTRY (OCIR)
+# ===================================================================================================
+
+data "oci_objectstorage_namespace" "ocir" {
+  compartment_id = var.compartment_ocid
+}
+
+# Container Registry repository for template images
+# NOTE: display_name must be unique across the tenancy
+resource "oci_artifacts_container_repository" "template_registry" {
+  compartment_id = var.compartment_ocid
+  display_name   = "${var.prefix}-templates"  # you can also hardcode "e2b-templates" if you want it stable
+  is_public      = false
+  is_immutable   = false
+
+  # Optional but nice to have
+  freeform_tags = {
+    "app"         = "e2b"
+    "environment" = var.environment
+  }
+}
+
+# ===================================================================================================
 # POSTGRESQL (MANAGED SERVICE)
 # ===================================================================================================
 
