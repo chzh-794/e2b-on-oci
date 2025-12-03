@@ -910,7 +910,17 @@ LOCAL_TEMPLATE_STORAGE_BASE_PATH=/var/e2b/templates
 TEMPLATE_BUCKET_NAME=local
 
 # Artifacts Registry Configuration (Local for POC)
-ARTIFACTS_REGISTRY_PROVIDER=Local
+# ARTIFACTS_REGISTRY_PROVIDER=Local
+
+# Artifacts Registry Configuration (OCI OCIR)
+ARTIFACTS_REGISTRY_PROVIDER=OCI_OCIR
+OCIR_TEMPLATE_REPOSITORY_PATH=${OCIR_TEMPLATE_REPOSITORY_PATH}
+OCI_REGION=${OCI_REGION}
+OCIR_NAMESPACE=${OCIR_NAMESPACE}
+
+# OCIR auth (these envs already set on the bastion host via deploy.env)
+OCIR_USERNAME=${OCIR_USERNAME}
+OCIR_PASSWORD=${OCIR_PASSWORD}
 
 # Firecracker Configuration
 FIRECRACKER_BIN_PATH=/usr/local/bin/firecracker
