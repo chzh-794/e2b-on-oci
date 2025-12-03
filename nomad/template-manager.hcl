@@ -45,11 +45,13 @@ job "template-manager" {
 
       env {
         NODE_ID                          = "$${node.unique.id}"
-        STORAGE_PROVIDER                 = "Local"
+        STORAGE_PROVIDER                 = "OCIBucket"
         LOCAL_TEMPLATE_STORAGE_BASE_PATH = "/var/e2b/templates"
-        TEMPLATE_BUCKET_NAME             = "local"
+        TEMPLATE_BUCKET_NAME             = "${oci_bucket_name}"
         ARTIFACTS_REGISTRY_PROVIDER      = "Local"
         SANDBOX_DEBUG_VM_LOGS            = "true"
+        OCI_REGION                       = "${oci_region}"
+        OCI_NAMESPACE                    = "${oci_namespace}"
       }
 
       config {

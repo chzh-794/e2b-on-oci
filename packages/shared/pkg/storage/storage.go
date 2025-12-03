@@ -17,6 +17,7 @@ type Provider string
 const (
 	GCPStorageProvider   Provider = "GCPBucket"
 	AWSStorageProvider   Provider = "AWSBucket"
+	OCIStorageProvider   Provider = "OCIBucket"
 	LocalStorageProvider Provider = "Local"
 
 	DefaultStorageProvider Provider = GCPStorageProvider
@@ -57,6 +58,9 @@ func GetTemplateStorageProvider(ctx context.Context) (StorageProvider, error) {
 		return NewAWSBucketStorageProvider(ctx, bucketName)
 	case GCPStorageProvider:
 		return NewGCPBucketStorageProvider(ctx, bucketName)
+	case OCIStorageProvider:
+		ociRegion := utils.RequiredEnv("OCI_REGION", "Region for OCI Object Storage")
+		return NewOCIBucketStorageProvider(ctx, bucketName, ociRegion)
 	}
 
 	return nil, fmt.Errorf("unknown storage provider: %s", provider)

@@ -802,7 +802,11 @@ cat <<EOF | ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_TARGET} 'cat > ~/e2b/api.env'
 POSTGRES_CONNECTION_STRING=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=require
 
 # Storage Configuration (Local for POC)
-STORAGE_PROVIDER=Local
+STORAGE_PROVIDER=OCIBucket
+TEMPLATE_BUCKET_NAME=${OCI_BUCKET_NAME}
+OCI_REGION=${OCI_REGION}
+OCI_NAMESPACE=${OCI_NAMESPACE}
+
 LOCAL_TEMPLATE_STORAGE_BASE_PATH=/var/e2b/templates
 
 # Redis Configuration (optional single-node fallback)
@@ -870,7 +874,11 @@ ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_TARGET} 'echo "✓ Client Proxy configura
 echo -e "\n${YELLOW}Creating Orchestrator configuration...${NC}"
 cat <<EOF | ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'cat > ~/e2b/orchestrator.env'
 # Storage Configuration (Local for POC)
-STORAGE_PROVIDER=Local
+STORAGE_PROVIDER=OCIBucket
+TEMPLATE_BUCKET_NAME=${OCI_BUCKET_NAME}
+OCI_REGION=${OCI_REGION}
+OCI_NAMESPACE=${OCI_NAMESPACE}
+
 LOCAL_TEMPLATE_STORAGE_BASE_PATH=/var/e2b/templates
 
 # Firecracker Configuration
@@ -905,7 +913,11 @@ ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'echo "✓ Orchestrator config
 echo -e "\n${YELLOW}Creating Template Manager configuration...${NC}"
 cat <<EOF | ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'cat > ~/e2b/template-manager.env'
 # Storage Configuration (Local for POC)
-STORAGE_PROVIDER=Local
+STORAGE_PROVIDER=OCIBucket
+TEMPLATE_BUCKET_NAME=${OCI_BUCKET_NAME}
+OCI_REGION=${OCI_REGION}
+OCI_NAMESPACE=${OCI_NAMESPACE}
+
 LOCAL_TEMPLATE_STORAGE_BASE_PATH=/var/e2b/templates
 TEMPLATE_BUCKET_NAME=local
 
