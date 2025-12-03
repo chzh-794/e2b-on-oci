@@ -125,6 +125,12 @@ variable "enable_object_storage" {
   default     = true
 }
 
+variable "enable_ocir" {
+  type        = bool
+  description = "Whether to create an OCIR container repository"
+  default     = true
+}
+
 variable "enable_postgresql" {
   type        = bool
   description = "Whether to create the managed PostgreSQL database"

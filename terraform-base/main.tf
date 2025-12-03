@@ -617,9 +617,8 @@ data "oci_objectstorage_namespace" "ocir" {
   compartment_id = var.compartment_ocid
 }
 
-# Container Registry repository for template images
-# NOTE: display_name must be unique across the tenancy
 resource "oci_artifacts_container_repository" "template_registry" {
+  count          = var.enable_ocir ? 1 : 0
   compartment_id = var.compartment_ocid
   display_name   = "${var.prefix}-templates"  # you can also hardcode "e2b-templates" if you want it stable
   is_public      = false
