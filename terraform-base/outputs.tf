@@ -109,12 +109,12 @@ output "ocir_namespace" {
 
 output "ocir_template_registry_name" {
   description = "Name of the Container Registry repository for template images"
-  value       = oci_artifacts_container_repository.template_registry.display_name
+  value       = var.enable_ocir ? oci_artifacts_container_repository.template_registry[0].display_name : null
 }
 
 output "ocir_template_registry_path" {
   description = "Full OCIR path (<region>.ocir.io/<namespace>/<repo>) for template images"
-  value       = "${var.region}.ocir.io/${data.oci_objectstorage_namespace.ocir.namespace}/${oci_artifacts_container_repository.template_registry.display_name}"
+  value       = var.enable_ocir? "${var.region}.ocir.io/${data.oci_objectstorage_namespace.ocir.namespace}/${oci_artifacts_container_repository.template_registry[0].display_name}" : null
 }
 
 # ===================================================================================================
