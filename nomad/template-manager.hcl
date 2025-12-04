@@ -48,13 +48,13 @@ job "template-manager" {
         STORAGE_PROVIDER                 = "Local"
         LOCAL_TEMPLATE_STORAGE_BASE_PATH = "/var/e2b/templates"
         TEMPLATE_BUCKET_NAME             = "local"
-        ARTIFACTS_REGISTRY_PROVIDER      = "OCI_OCIR"
+        ARTIFACTS_REGISTRY_PROVIDER      = "${ARTIFACTS_REGISTRY_PROVIDER}"
         SANDBOX_DEBUG_VM_LOGS            = "true"
-        OCI_REGION                  = "${OCI_REGION}"
-        OCIR_NAMESPACE              = "${OCIR_NAMESPACE}"
-        OCIR_TEMPLATE_REPOSITORY_PATH = "${OCIR_TEMPLATE_REPOSITORY_PATH}"
-        OCIR_USERNAME               = "${OCIR_USERNAME}"
-        OCIR_PASSWORD               = "${OCIR_PASSWORD}"
+        OCI_REGION                       = "${OCI_REGION}"
+        OCIR_NAMESPACE                   = "${OCIR_NAMESPACE}"
+        OCIR_TEMPLATE_REPOSITORY_PATH    = "${OCIR_TEMPLATE_REPOSITORY_PATH}"
+        OCIR_USERNAME                    = "${OCIR_USERNAME}"
+        OCIR_PASSWORD                    = "${OCIR_PASSWORD}"
       }
 
       config {

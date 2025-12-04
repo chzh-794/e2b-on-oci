@@ -11,35 +11,37 @@ import (
 	containerregistry "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+)
 
-	"github.com/e2b-dev/infra/packages/shared/pkg/consts"
+const ocirRepoBaseEnv = "OCIR_TEMPLATE_REPOSITORY_PATH"
+
+// Optional auth envs
+const (
+	ocirUsernameEnv = "OCIR_USERNAME"
+	ocirPasswordEnv = "OCIR_PASSWORD" // auth token
 )
 
 type OCIArtifactsRegistry struct {
-	// Example: us-ashburn-1.ocir.io/ideshil2wbzt/e2b-templates
 	repoBase string
-	// Auth for OCIR (username/password or anonymous)
-	auth authn.Authenticator
+	auth     authn.Authenticator
 }
 
-func NewOCIArtifactsRegistry(ctx context.Context) (*OCIArtifactsRegistry, error) {
-	// Prefer explicit full path if set (e.g. us-ashburn-1.ocir.io/namespace/repo)
-	base := consts.OCIRTemplateRepositoryPath
+func NewOCIArtifactsRegistryFromEnv() (*OCIArtifactsRegistry, error) {
+	base := os.Getenv(ocirRepoBaseEnv)
 	if base == "" {
-		if consts.OCIRegion == "" || consts.OCIRNamespace == "" || consts.OCIRTemplateRepository == "" {
-			return nil, fmt.Errorf("missing OCIR config: set OCI_REGION, OCIR_NAMESPACE, OCIR_TEMPLATE_REPOSITORY or OCIR_TEMPLATE_REPOSITORY_PATH")
-		}
-		base = fmt.Sprintf("%s.ocir.io/%s/%s",
-			consts.OCIRegion,
-			consts.OCIRNamespace,
-			consts.OCIRTemplateRepository,
+		return nil, fmt.Errorf(
+			"%s env var must be set to full OCIR repo path (e.g. us-ashburn-1.ocir.io/namespace/e2b-templates)",
+			ocirRepoBaseEnv,
 		)
 	}
 
-	user := os.Getenv("OCIR_USERNAME")
-	pass := os.Getenv("OCIR_PASSWORD")
+	user := os.Getenv(ocirUsernameEnv)
+	pass := os.Getenv(ocirPasswordEnv)
 
+	// Default: anonymous (for public repos)
 	var auth authn.Authenticator = authn.Anonymous
+
+	// If creds present, use basic auth (username + auth token)
 	if user != "" && pass != "" {
 		auth = &authn.Basic{
 			Username: user,
@@ -53,13 +55,8 @@ func NewOCIArtifactsRegistry(ctx context.Context) (*OCIArtifactsRegistry, error)
 	}, nil
 }
 
-func (o *OCIArtifactsRegistry) tagFor(templateId, buildId string) string {
-	// Match other providers: <repo>:<templateId>-<buildId>
+func (o *OCIArtifactsRegistry) Tag(templateId, buildId string) string {
 	return fmt.Sprintf("%s:%s-%s", o.repoBase, templateId, buildId)
-}
-
-func (o *OCIArtifactsRegistry) GetTag(ctx context.Context, templateId, buildId string) (string, error) {
-	return o.tagFor(templateId, buildId), nil
 }
 
 func (o *OCIArtifactsRegistry) GetImage(
@@ -67,7 +64,7 @@ func (o *OCIArtifactsRegistry) GetImage(
 	templateId, buildId string,
 	platform containerregistry.Platform,
 ) (containerregistry.Image, error) {
-	tag := o.tagFor(templateId, buildId)
+	tag := o.Tag(templateId, buildId)
 
 	ref, err := name.ParseReference(tag)
 	if err != nil {
@@ -79,8 +76,6 @@ func (o *OCIArtifactsRegistry) GetImage(
 		remote.WithAuth(o.auth),
 	}
 
-	// If caller passes a non-zero platform, honor it.
-	// Zero value (all fields empty) is effectively "no platform preference".
 	if platform.OS != "" || platform.Architecture != "" || platform.Variant != "" {
 		opts = append(opts, remote.WithPlatform(platform))
 	}
@@ -89,7 +84,7 @@ func (o *OCIArtifactsRegistry) GetImage(
 	if err != nil {
 		var terr *transport.Error
 		if errors.As(err, &terr) && terr.StatusCode == 404 {
-			return nil, ErrImageNotExists
+			return nil, fmt.Errorf("image %q not found (404)", tag)
 		}
 		return nil, fmt.Errorf("pulling OCIR image %q failed: %w", tag, err)
 	}
@@ -97,27 +92,22 @@ func (o *OCIArtifactsRegistry) GetImage(
 	return img, nil
 }
 
-func (o *OCIArtifactsRegistry) Delete(ctx context.Context, templateId string, buildId string) error {
-	tag := o.tagFor(templateId, buildId)
-
-	ref, err := name.ParseReference(tag)
-	if err != nil {
-		return fmt.Errorf("invalid OCIR reference %q: %w", tag, err)
-	}
-
-	err = remote.Delete(
-		ref,
-		remote.WithContext(ctx),
-		remote.WithAuth(o.auth),
-	)
-	if err != nil {
-		var terr *transport.Error
-		if errors.As(err, &terr) && terr.StatusCode == 404 {
-			// Mirror behavior of other providers: 404 => image does not exist
-			return ErrImageNotExists
-		}
-		return fmt.Errorf("deleting OCIR image %q failed: %w", tag, err)
-	}
-
+func (o *OCIArtifactsRegistry) Delete(_ context.Context, _ string, _ string) error {
+	// Intentionally a no-op for now.
 	return nil
+}
+
+// NewOCIArtifactsRegistry provides the same constructor shape as other
+// providers (accepting a context). Currently it initializes from the
+// environment via NewOCIArtifactsRegistryFromEnv. Keeping this wrapper
+// preserves the API expected by callers in registry.go.
+func NewOCIArtifactsRegistry(ctx context.Context) (*OCIArtifactsRegistry, error) {
+	return NewOCIArtifactsRegistryFromEnv()
+}
+
+// GetTag implements the ArtifactsRegistry interface. The existing
+// Tag method returns the tag string; wrap it to match the interface
+// which returns (string, error) and accepts a context parameter.
+func (o *OCIArtifactsRegistry) GetTag(_ context.Context, templateId string, buildId string) (string, error) {
+	return o.Tag(templateId, buildId), nil
 }

@@ -16,7 +16,7 @@ type RegistryProvider string
 const (
 	GCPStorageProvider   RegistryProvider = "GCP_ARTIFACTS"
 	AWSStorageProvider   RegistryProvider = "AWS_ECR"
-	OCIStorageProvider RegistryProvider = "OCI_OCIR"
+	OCIStorageProvider   RegistryProvider = "OCI_OCIR"
 	LocalStorageProvider RegistryProvider = "Local"
 
 	DefaultRegistryProvider RegistryProvider = GCPStorageProvider
