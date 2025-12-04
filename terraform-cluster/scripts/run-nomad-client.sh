@@ -216,16 +216,13 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
-# Allow Nomad tasks (orchestrator/template builds) to access /dev/nbd*, /dev/loop*
-# Without this, newer OCI kernels return EPERM when Firecracker opens NBD devices.
+# Disable device filtering for Nomad service to allow access to NBD, loop, and TAP devices.
+# Without this, orchestrator/Firecracker cannot access /dev/nbd*, /dev/loop*, /dev/net/tun
+# on newer OCI kernels (6.8+) with stricter cgroup v2 device filtering.
 mkdir -p /etc/systemd/system/nomad.service.d
 cat >/etc/systemd/system/nomad.service.d/10-e2b-devices.conf <<'EOF'
 [Service]
-DevicePolicy=auto
-DeviceAllow=block-43:* rwm     # /dev/nbd*
-DeviceAllow=block-7:* rwm      # /dev/loop*
-DeviceAllow=char-10:237 rwm    # /dev/loop-control
-DeviceAllow=char-10:200 rwm    # /dev/net/tun (tap creation)
+PrivateDevices=no
 EOF
 
 systemctl daemon-reload

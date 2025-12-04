@@ -118,7 +118,12 @@ for ip in "\${SERVER_LIST[@]}"; do
 done
 SERVER_JSON="\${SERVER_JSON%,}]"
 
-REGION=\$(curl -sf -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/region || echo "region1")
+INSTANCE_JSON=\$(curl -sf -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/)
+CANONICAL_REGION=\$(echo "\$INSTANCE_JSON" | jq -r '.canonicalRegionName // empty')
+if [[ -z "\$CANONICAL_REGION" ]] || [[ "\$CANONICAL_REGION" == "null" ]]; then
+  CANONICAL_REGION=\$(echo "\$INSTANCE_JSON" | jq -r '.region')
+fi
+REGION=\${CANONICAL_REGION}
 PRIVATE_IP=\$(curl -sf -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/vnics/0/privateIp || hostname -I | awk '{print \$1}')
 NODE_NAME=\$(hostname)
 
@@ -258,7 +263,12 @@ if [[ -z "\$SERVER_ADDR" ]]; then
   exit 1
 fi
 
-REGION=\$(curl -sf -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/region || echo "region1")
+INSTANCE_JSON=\$(curl -sf -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/)
+CANONICAL_REGION=\$(echo "\$INSTANCE_JSON" | jq -r '.canonicalRegionName // empty')
+if [[ -z "\$CANONICAL_REGION" ]] || [[ "\$CANONICAL_REGION" == "null" ]]; then
+  CANONICAL_REGION=\$(echo "\$INSTANCE_JSON" | jq -r '.region')
+fi
+REGION=\${CANONICAL_REGION}
 PRIVATE_IP=\$(curl -sf -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/vnics/0/privateIp || hostname -I | awk '{print \$1}')
 NODE_NAME=\$(hostname)
 
@@ -348,11 +358,7 @@ fi
 sudo mkdir -p /etc/systemd/system/nomad.service.d
 sudo tee /etc/systemd/system/nomad.service.d/10-e2b-devices.conf >/dev/null <<'SERVICE'
 [Service]
-DevicePolicy=auto
-DeviceAllow=block-43:* rwm     # /dev/nbd*
-DeviceAllow=block-7:* rwm      # /dev/loop*
-DeviceAllow=char-10:237 rwm    # /dev/loop-control
-DeviceAllow=char-10:200 rwm    # /dev/net/tun (tap creation)
+PrivateDevices=no
 SERVICE
 
 sudo systemctl daemon-reload
