@@ -43,9 +43,9 @@ for attempt in $(seq 1 12); do
     echo "Outbound connectivity verified." | tee -a $LOG_FILE
     break
   fi
-  echo "Attempt ${attempt}/12: Network not ready, retrying in 5s..." | tee -a $LOG_FILE
+  echo "Attempt $${attempt}/12: Network not ready, retrying in 5s..." | tee -a $LOG_FILE
   sleep 5
-  if [ "$attempt" -eq 12 ]; then
+  if [ "$${attempt}" -eq 12 ]; then
     echo "ERROR: Network never became ready (unable to reach $check_url)" | tee -a $LOG_FILE
     exit 1
   fi
@@ -56,7 +56,7 @@ run_apt() {
   local description=$1
   shift
   for attempt in $(seq 1 5); do
-    echo "Running: $description (attempt ${attempt}/5)" | tee -a $LOG_FILE
+    echo "Running: $description (attempt $${attempt}/5)" | tee -a $LOG_FILE
     if "$@" >> $LOG_FILE 2>&1; then
       return 0
     fi
