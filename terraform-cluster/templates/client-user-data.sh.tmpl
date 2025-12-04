@@ -12,17 +12,38 @@ echo "Compartment: ${compartment_id}"
 echo "Region: ${region}"
 echo "================================================================================"
 
-# Wait for apt locks to be released (cloud-init may be running other apt operations)
-while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 2; done
-while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
-while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 2; done
+# Wait for apt locks and retry apt operations to avoid race conditions with cloud-init
+wait_for_apt() {
+  for i in {1..60}; do
+    if ! sudo fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "Waiting for apt locks (attempt $i)..."
+    sleep 5
+  done
+  return 1
+}
 
-sudo apt-get update -y
-sudo apt-get install -y python3-pip jq gzip nfs-common nftables nbd-client
+apt_install_with_retry() {
+  local max_attempts=5
+  for attempt in $(seq 1 $max_attempts); do
+    wait_for_apt || continue
+    if sudo apt-get update -y && sudo apt-get install -y "$@"; then
+      return 0
+    fi
+    echo "apt install failed (attempt $attempt/$max_attempts), retrying..."
+    sleep 10
+  done
+  echo "ERROR: apt install failed after $max_attempts attempts"
+  return 1
+}
+
+apt_install_with_retry python3-pip jq gzip nfs-common nftables nbd-client
 pip3 install --upgrade oci-cli
 export PATH="$PATH:/usr/local/bin"
 sudo systemctl stop docker docker.socket >/dev/null 2>&1 || true
 sudo apt remove -y docker-ce docker-ce-cli docker-buildx-plugin docker-compose-plugin containerd containerd.io >/dev/null 2>&1 || true
+wait_for_apt
 sudo DEBIAN_FRONTEND=noninteractive apt install -y docker.io
 sudo systemctl daemon-reload
 sudo systemctl enable --now docker.socket
@@ -46,8 +67,14 @@ chmod +x /etc/profile.d/e2b-client-env.sh
 
 export OCI_CLI_AUTH=instance_principal
 
+# Configure NBD module parameters persistently
+sudo mkdir -p /etc/modprobe.d
+sudo tee /etc/modprobe.d/nbd.conf >/dev/null <<'EOF'
+options nbd max_part=16 nbds_max=128
+EOF
+
 sudo modprobe -r nbd || true
-sudo modprobe nbd max_part=16 nbds_max=128
+sudo modprobe nbd
 sudo sysctl -w kernel.unprivileged_userns_clone=1
 
 # Mount /run/netns as shared for named network namespace support
@@ -172,6 +199,14 @@ WAN_IF=$(ip route get 8.8.8.8 | awk '{for(i=1;i<=NF;i++) if($i=="dev") {print $(
 sudo sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward = 1" | sudo tee /etc/sysctl.d/99-e2b-ipforward.conf >/dev/null
 
+# Disable UFW firewall (OCI default) - it adds REJECT rules that block Firecracker VM traffic
+# UFW adds "REJECT all" rules to FORWARD chain which prevents sandbox network connectivity
+if command -v ufw >/dev/null 2>&1; then
+  sudo ufw disable || true
+  sudo systemctl stop ufw || true
+  sudo systemctl disable ufw || true
+fi
+
 # Configure iptables (POC explicitly disabled nftables - see POC_SUMMARY.md)
 # Flush and configure INPUT chain to allow intra-cluster communication
 if command -v iptables >/dev/null 2>&1; then
@@ -179,6 +214,9 @@ if command -v iptables >/dev/null 2>&1; then
   sudo iptables -P INPUT ACCEPT || true
   sudo iptables -F FORWARD || true
   sudo iptables -P FORWARD ACCEPT || true
+  
+  # Remove any UFW REJECT rules that might persist after UFW disable
+  sudo iptables -D FORWARD -j REJECT --reject-with icmp-host-prohibited 2>/dev/null || true
 
   # Allow orchestrator and template-manager gRPC ports from VCN
   sudo iptables -I INPUT 1 -p tcp --dport 5008 -s 10.0.0.0/16 -j ACCEPT || true

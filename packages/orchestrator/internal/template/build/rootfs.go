@@ -36,7 +36,7 @@ const (
 	logExternalPrefix         = "[external] "
 
 	busyBoxBinaryPath = "/bin/busybox"
-	busyBoxInitPath   = "usr/bin/init"
+	busyBoxInitPath   = "/usr/bin/init"
 	systemdInitPath   = "/sbin/init"
 )
 
@@ -402,9 +402,9 @@ BUILD_ID=%s
 	symlinkLayer, err := LayerSymlink(
 		map[string]string{
 			// Enable envd service autostart
-			"etc/systemd/system/multi-user.target.wants/envd.service": "etc/systemd/system/envd.service",
+			"etc/systemd/system/multi-user.target.wants/envd.service": "../envd.service",
 			// Enable chrony service autostart
-			"etc/systemd/system/multi-user.target.wants/chrony.service": "etc/systemd/system/chrony.service",
+			"etc/systemd/system/multi-user.target.wants/chrony.service": "../chrony.service",
 		},
 	)
 	if err != nil {

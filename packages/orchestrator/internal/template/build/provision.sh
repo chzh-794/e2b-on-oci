@@ -52,7 +52,7 @@ apt_capture() {
     action=$1
     shift
     log "Running apt: $action"
-    timeout 90 $UNBUFFER apt-get -o Debug::pkgAcquire::Worker=true "$@" 2>&1 | tee -a "$APT_LOG"
+    timeout 300 $UNBUFFER apt-get -o Debug::pkgAcquire::Worker=true "$@" 2>&1 | tee -a "$APT_LOG"
     rc=${PIPESTATUS:-${?}}
     log "apt finished: $action (exit $rc)"
     return "$rc"

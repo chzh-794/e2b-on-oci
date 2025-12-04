@@ -566,18 +566,37 @@ sudo setcap cap_sys_admin+ep /usr/bin/mount || true
 # POC fix from POC_SUMMARY.md section "### 5. NBD Device Permissions"
 sudo usermod -a -G disk,kvm root || true
 
+# Configure NBD module parameters persistently
+sudo mkdir -p /etc/modprobe.d
+sudo tee /etc/modprobe.d/nbd.conf >/dev/null <<'EOF'
+options nbd max_part=16 nbds_max=128
+EOF
+
 # Load NBD kernel module
-sudo modprobe nbd max_part=16 || true
-echo "✓ NBD module loaded"
+sudo modprobe -r nbd || true
+sudo modprobe nbd
+echo "✓ NBD module configured (max_part=16, nbds_max=128)"
 
 # Create template storage directory
 sudo mkdir -p /var/e2b/templates
 sudo chown -R nomad:nomad /var/e2b
 echo "✓ Template storage directory created"
 
+# Disable UFW firewall (OCI default) - it adds REJECT rules that block Firecracker VM traffic
+# UFW adds "REJECT all" rules to FORWARD chain which prevents sandbox network connectivity
+if command -v ufw >/dev/null 2>&1; then
+  sudo ufw disable || true
+  sudo systemctl stop ufw || true
+  sudo systemctl disable ufw || true
+  echo "✓ UFW firewall disabled"
+fi
+
 # Configure iptables to allow orchestrator and template-manager gRPC ports
 # (POC explicitly uses iptables, not nftables - see POC_SUMMARY.md)
 if command -v iptables >/dev/null 2>&1; then
+  # Remove any UFW REJECT rules from FORWARD chain that block all traffic
+  sudo iptables -D FORWARD -j REJECT --reject-with icmp-host-prohibited 2>/dev/null || true
+  
   sudo iptables -I INPUT 1 -p tcp --dport 5008 -s 10.0.0.0/16 -j ACCEPT 2>/dev/null || true
   sudo iptables -I INPUT 1 -p tcp --dport 5009 -s 10.0.0.0/16 -j ACCEPT 2>/dev/null || true
   echo "✓ iptables rules for ports 5008/5009 added"
@@ -997,8 +1016,10 @@ if [[ ! -f /opt/e2b/bin/envd ]]; then
   exit 1
 fi
 
-sudo cp /opt/e2b/bin/envd /fc-envd/envd
-sudo chmod 0755 /fc-envd/envd
+if [ ! -e /fc-envd/envd ] || [ ! -L /fc-envd/envd ]; then
+  sudo cp /opt/e2b/bin/envd /fc-envd/envd
+  sudo chmod 0755 /fc-envd/envd
+fi
 sudo ln -sf /usr/local/bin/firecracker /fc-versions/\${FIRECRACKER_VERSION}/firecracker
 sudo ln -sf /var/e2b/kernels/vmlinux-\${KERNEL_VERSION}/vmlinux.bin /fc-kernels/\${KERNEL_VERSION}/vmlinux.bin
 sudo ln -sf /var/e2b/kernels/vmlinux-\${KERNEL_VERSION}/vmlinux.bin /fc-kernels/vmlinux-\${KERNEL_VERSION}/vmlinux.bin
