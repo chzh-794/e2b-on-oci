@@ -279,7 +279,7 @@ func (b *TemplateBuilder) Build(ctx context.Context, template *TemplateConfig) (
 		rootfsPath,
 		fc.ProcessOptions{
 			InitScriptPath:      systemdInitPath,
-			KernelLogs:          env.IsDevelopment(),
+			KernelLogs:          false,
 			SystemdToKernelLogs: false,
 		},
 		config.AllowSandboxInternet,

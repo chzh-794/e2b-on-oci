@@ -87,8 +87,8 @@ declare -a PEER_IPS=()
 discover_peers() {
   local attempt max_attempts sleep_seconds
   attempt=1
-  max_attempts=30
-  sleep_seconds=5
+  max_attempts=60
+  sleep_seconds=10
   while (( attempt <= max_attempts )); do
     PEER_IPS=()
     local peer_ids
@@ -191,7 +191,7 @@ systemctl enable nomad.service
 systemctl restart nomad.service
 
 wait_for_nomad_api() {
-  for attempt in $(seq 1 60); do
+  for attempt in $(seq 1 120); do
     if curl -sf http://127.0.0.1:4646/v1/status/leader >/dev/null; then
       return 0
     fi
