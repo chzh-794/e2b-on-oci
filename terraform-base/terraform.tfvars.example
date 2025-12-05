@@ -10,7 +10,7 @@
 
 tenancy_ocid      = "ocid1.tenancy.oc1..aaaaaaaxxxxxx"
 compartment_ocid  = "ocid1.compartment.oc1..aaaaaaaxxxxxx"
-region            = "us-ashburn-1"  # Change to YOUR region
+region            = "ap-sydney-1"  # Change to YOUR region
 
 # Note: Availability Domain is auto-selected (like AWS auto-spreads across AZs)
 
