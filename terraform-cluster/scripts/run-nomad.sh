@@ -169,7 +169,7 @@ cat >"$NOMAD_SERVICE_PATH" <<EOF
 [Unit]
 Description=HashiCorp Nomad
 Documentation=https://www.nomadproject.io/docs/
-After=network-online.target consul.service cloud-final.service
+After=network-online.target consul.service
 Wants=network-online.target
 
 [Service]
