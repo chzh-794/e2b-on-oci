@@ -1,6 +1,6 @@
 module github.com/e2b-dev/infra/packages/proxy
 
-go 1.24.3
+go 1.25
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3

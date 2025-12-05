@@ -1,6 +1,6 @@
 module github.com/e2b-dev/infra/packages/orchestrator
 
-go 1.24.3
+go 1.25
 
 require (
 	connectrpc.com/connect v1.18.1
