@@ -80,7 +80,7 @@ if [[ -z "$INSTANCE_JSON" ]]; then
 fi
 
 INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.id')
-# Use canonicalRegionName (e.g., us-ashburn-1) so clients match server config.
+# Use canonicalRegionName (e.g., ap-sydney-1) so clients match server config.
 # Fall back to short region (iad, phx, etc.) only if canonical name is unavailable.
 CANONICAL_REGION=$(echo "$INSTANCE_JSON" | jq -r '.canonicalRegionName // empty')
 if [[ -z "$CANONICAL_REGION" || "$CANONICAL_REGION" == "null" ]]; then

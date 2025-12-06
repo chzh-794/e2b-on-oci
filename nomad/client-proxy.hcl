@@ -1,5 +1,5 @@
 job "client-proxy" {
-  datacenters = ["us-ashburn-1"]
+  datacenters = ["__REGION__"]
   type        = "service"
   priority    = 80
 

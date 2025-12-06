@@ -6,8 +6,9 @@ This runbook documents the standard procedure for deploying the E2B API and supp
 
 ```
 e2b-on-oci/
-├── terraform-base/        # Networking, bastion, IAM policies, object storage buckets, managed PostgreSQL/Redis (Stack 1)
-├── terraform-cluster/     # Nomad/Consul/API/client pools (Stack 2)
+├── terraform-policies/    # IAM dynamic group + policies for instance principals/Packer (Stack 1)
+├── terraform-base/        # Networking, bastion, object storage buckets, managed PostgreSQL/Redis (Stack 2)
+├── terraform-cluster/     # Nomad/Consul/API/client pools (Stack 3)
 ├── packages/              # Source code for API, orchestrator, client-proxy, template-manager, envd, shared libs
 ├── nomad/                 # Nomad job definitions (api.hcl, orchestrator.hcl, client-proxy.hcl, template-manager.hcl)
 ├── deploy-poc.sh          # Provisioning script that pushes binaries/configs and installs dependencies
@@ -17,7 +18,7 @@ e2b-on-oci/
 └── README.md              # This runbook
 ```
 
-- **terraform-base** and **terraform-cluster** remain separate stacks so you can iterate on cluster resources without recreating networking/DB resources. Zip each folder to produce `e2b-oci-stack.zip` (base) and `e2b-oci-cluster.zip` (cluster).
+- **terraform-policies**, **terraform-base**, and **terraform-cluster** remain separate stacks so you can iterate on cluster resources without recreating networking/DB resources. Package three stacks and apply them in order: (1) IAM-only `e2b-oci-policies.zip`, (2) `e2b-oci-stack.zip` (base), (3) `e2b-oci-cluster.zip` (cluster).
 - **packages/** source code is staged to instances and built directly on the target hosts (no cross-compilation needed).
 - **deploy-poc.sh** reads `deploy.env`, connects through the bastion, installs dependencies, uploads env files/binaries, and downloads Firecracker assets.
 - **terraform-cluster** user-data now enables the `e2b-cleanup-network.timer` on the client pool, which runs every minute to delete idle `ns-*` namespaces and detach orphaned `nbd` devices so template builds never exhaust the slot pool.
@@ -27,8 +28,8 @@ e2b-on-oci/
 
 ## Quickstart Overview
 
-1. **Package Terraform** – upload the base and cluster stacks to OCI Resource Manager.
-2. **Apply Terraform** – provision OCI networking, IAM policies, managed services, and bring up the Nomad/Consul server/API/client pools.
+1. **Package Terraform** – upload the policies, base, and cluster stacks to OCI Resource Manager.
+2. **Apply Terraform** – apply IAM policies first, then base, then cluster; this guarantees the bastion has permissions to launch the Packer builder and create custom images.
 3. **Build Binaries & Stage Runtime Assets** – build binaries on instances and stage kernels and configuration.
 4. **Register Nomad Jobs** – launch the orchestrator, API, client-proxy, and template-manager.
 5. **Initialize PostgreSQL** – load schema and seeds required for the API to authorize requests.
@@ -74,24 +75,33 @@ Modify the version constants at the top of `deploy-poc.sh` if you need to pin di
 
 ## 1. Package Terraform Bundles
 
-From the repo root (`e2b-on-oci/`):
+From the repo root (`e2b-on-oci/`), run the helper script (defaults to `us-ashburn-1`):
 
 ```bash
-zip -r e2b-oci-stack.zip terraform-base
-zip -r e2b-oci-cluster.zip terraform-cluster
+./package_terraform_bundles.sh [region]
 ```
 
-These are the archives you will upload into OCI Resource Manager.
+Examples:
+- `./package_terraform_bundles.sh` → uses `us-ashburn-1`
+- `./package_terraform_bundles.sh ap-sydney-1`
 
-## 2. Apply Terraform (Base & Cluster)
+The script substitutes any region placeholders before zipping and emits three bundles in the repo root:
+- `e2b-oci-policies.zip`
+- `e2b-oci-stack.zip`
+- `e2b-oci-cluster.zip`
 
-1. In OCI Resource Manager, create a Stack from `e2b-oci-stack.zip` and run `Apply` using the desired compartment, region, CIDRs, SSH key, etc.
-2. After the base stack completes, repeat the process with `e2b-oci-cluster.zip`. Capture the following before starting the cluster stack:
+Apply them in the order listed above so the IAM/DG changes are active before the bastion user data runs Packer.
+
+## 2. Apply Terraform (Policies → Base → Cluster)
+
+1. In OCI Resource Manager, create a Stack from `e2b-oci-policies.zip` and run `Apply` in your home region. This bootstraps the dynamic group + policies needed for instance principal/Packer.
+2. After the policies stack finishes propagating, create and apply `e2b-oci-stack.zip` (base) using the desired compartment, region, CIDRs, SSH key, etc.
+3. After the base stack completes, apply `e2b-oci-cluster.zip`. Capture the following before starting the cluster stack:
    - `private_subnet_id`, `vcn_id`, and `vcn_cidr_block` (from the base stack outputs)
    - `custom_image_ocid`: open OCI Console → **Compute → Custom Images** under the same compartment and copy the latest `e2b-*` image OCID (each build is timestamped). You can also SSH to the bastion and run `cat /opt/e2b/custom_image_ocid.txt`.
    - SSH public key you want injected into the cluster instances
    - Any tag/compartment overrides you plan to reuse
-3. Collect the IPs you need for SSH (bastion public IP, server/API/client pool private IPs, etc.) from the OCI Console → Compute → Instances in the target compartment, then copy them into `deploy.env`.
+4. Collect the IPs you need for SSH (bastion public IP, server/API/client pool private IPs, etc.) from the OCI Console → Compute → Instances in the target compartment, then copy them into `deploy.env`.
 
 ## 3. Stage Artifacts & Runtime Assets
 

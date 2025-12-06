@@ -68,7 +68,7 @@ if [[ -z "$INSTANCE_JSON" ]]; then
 fi
 
 INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.id')
-# Use canonicalRegionName (e.g., us-ashburn-1) to keep region/datacenter aligned
+# Use canonicalRegionName (e.g., ap-sydney-1) to keep region/datacenter aligned
 # across servers and clients. Fall back to short region code if canonical is missing.
 CANONICAL_REGION=$(echo "$INSTANCE_JSON" | jq -r '.canonicalRegionName // empty')
 if [[ -z "$CANONICAL_REGION" || "$CANONICAL_REGION" == "null" ]]; then

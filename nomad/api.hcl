@@ -1,5 +1,5 @@
 job "api" {
-  datacenters = ["us-ashburn-1"]
+  datacenters = ["__REGION__"]
   type        = "service"
   priority    = 90
 
@@ -48,4 +48,3 @@ job "api" {
     }
   }
 }
-

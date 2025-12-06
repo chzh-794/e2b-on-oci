@@ -67,11 +67,6 @@ output "bastion_instance_id" {
   value       = oci_core_instance.bastion.id
 }
 
-output "service_dynamic_group_id" {
-  description = "OCID of the dynamic group granting OCI services permissions to instances in the compartment"
-  value       = oci_identity_dynamic_group.service_dynamic_group.id
-}
-
 # ===================================================================================================
 # OBJECT STORAGE, POSTGRESQL, REDIS
 # ===================================================================================================
@@ -123,4 +118,3 @@ output "ubuntu_image_name" {
   description = "Name of the x86_64 Ubuntu 22.04 image (for debugging)"
   value       = local.ubuntu_image_name
 }
-

@@ -63,6 +63,32 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 NOMAD_DIR="${SCRIPT_DIR}/nomad"
+NOMAD_REGION="${NOMAD_REGION:-}"
+
+# Auto-detect region from server pool metadata if not provided; fall back to Ashburn
+if [[ -z "${NOMAD_REGION}" ]]; then
+  NOMAD_REGION=$(ssh "${BASTION_SSH_OPTS[@]}" ${SSH_USER}@${BASTION_HOST} \
+    "curl -sf -H 'Authorization: Bearer Oracle' http://169.254.169.254/opc/v2/instance/ | jq -r '.canonicalRegionName // .region // empty'") || true
+  NOMAD_REGION=${NOMAD_REGION:-us-ashburn-1}
+fi
+
+NOMAD_STAGE_DIR=$(mktemp -d)
+cleanup_stage() {
+  rm -rf "${NOMAD_STAGE_DIR}"
+}
+trap cleanup_stage EXIT
+
+cp -R "${NOMAD_DIR}/." "${NOMAD_STAGE_DIR}/"
+python - "$NOMAD_STAGE_DIR" "$NOMAD_REGION" <<'PY'
+import sys, pathlib
+root, region = pathlib.Path(sys.argv[1]), sys.argv[2]
+for path in root.rglob("*"):
+    if not path.is_file():
+        continue
+    data = path.read_text(encoding="utf-8")
+    if "__REGION__" in data:
+        path.write_text(data.replace("__REGION__", region), encoding="utf-8")
+PY
 
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║       Deploying E2B Services via Nomad                    ║${NC}"
@@ -71,7 +97,7 @@ echo ""
 
 # Stage HCLs on bastion (control node for submission)
 echo -e "${YELLOW}Copying Nomad job definitions to Bastion...${NC}"
-tar -C "${NOMAD_DIR}" -czf - . \
+tar -C "${NOMAD_STAGE_DIR}" -czf - . \
   | ssh "${BASTION_SSH_OPTS[@]}" ${SSH_USER}@${BASTION_HOST} 'rm -rf ~/nomad && mkdir -p ~/nomad && tar -xzf - -C ~/nomad'
 echo -e "${GREEN}✓ Job definitions copied to Bastion${NC}"
 echo ""
@@ -491,4 +517,3 @@ fi
 
 # Note: API credentials are automatically refreshed by validate-api.sh when needed
 # If you need credentials before running validate-api.sh, run: ./scripts/export-api-creds.sh
-

@@ -179,7 +179,7 @@ env {
     STORAGE_PROVIDER                 = "OCIBucket"  # Changed from "Local"
     TEMPLATE_BUCKET_NAME             = "${oci_bucket_name}"  # Changed from "local"
     ARTIFACTS_REGISTRY_PROVIDER      = "OCI_OCIR"  # Changed from "Local"
-    OCI_REGION                       = "${oci_region}"  # NEW (e.g., "us-ashburn-1")
+    OCI_REGION                       = "${oci_region}"  # NEW (e.g., "ap-sydney-1")
     OCI_NAMESPACE                    = "${oci_namespace}"  # NEW (Object Storage namespace, same for OCIR)
     OCI_CONTAINER_REPOSITORY_NAME    = "${oci_repo_name}"  # NEW (display_name from Terraform)
     # ... other vars ...
@@ -208,7 +208,7 @@ env {
 STORAGE_PROVIDER=OCIBucket  # Changed from Local
 TEMPLATE_BUCKET_NAME=<oci-bucket-name>  # Changed from "local"
 ARTIFACTS_REGISTRY_PROVIDER=OCI_OCIR  # Changed from Local
-OCI_REGION=<region>  # NEW (e.g., "us-ashburn-1")
+OCI_REGION=<region>  # NEW (e.g., "ap-sydney-1")
 OCI_NAMESPACE=<namespace>  # NEW (Object Storage namespace, same for OCIR)
 OCI_CONTAINER_REPOSITORY_NAME=<repo-name>  # NEW (display_name from Terraform)
 
@@ -314,7 +314,7 @@ auth := &authn.Basic{
 | Storage Provider | `STORAGE_PROVIDER="AWSBucket"` | `STORAGE_PROVIDER="OCIBucket"` |
 | Template Bucket | `TEMPLATE_BUCKET_NAME="<s3-bucket>"` | `TEMPLATE_BUCKET_NAME="<oci-bucket>"` |
 | Artifacts Registry | `ARTIFACTS_REGISTRY_PROVIDER="AWS_ECR"` | `ARTIFACTS_REGISTRY_PROVIDER="OCI_OCIR"` |
-| Region | `AWS_REGION="<region>"` | `OCI_REGION="<region>"` (e.g., "us-ashburn-1") |
+| Region | `AWS_REGION="<region>"` | `OCI_REGION="<region>"` (e.g., "ap-sydney-1") |
 | Namespace | (not needed) | `OCI_NAMESPACE="<namespace>"` (Object Storage namespace, same for OCIR) |
 | Container Registry Repo | `AWS_DOCKER_REPOSITORY_NAME="e2bdev/base"` | `OCI_CONTAINER_REPOSITORY_NAME="<repo-name>"` (display_name from Terraform) |
 | OCIR Endpoint | (auto from region) | Auto-built as: `<region>.ocir.io/<namespace>/<repo>` |

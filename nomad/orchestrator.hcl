@@ -1,6 +1,6 @@
 job "orchestrator" {
   type        = "system"
-  datacenters = ["us-ashburn-1"]
+  datacenters = ["__REGION__"]
   priority    = 90
 
   constraint {
