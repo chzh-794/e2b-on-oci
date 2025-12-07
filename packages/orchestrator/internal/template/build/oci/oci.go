@@ -37,7 +37,7 @@ func GetImage(ctx context.Context, tracer trace.Tracer, artifactRegistry artifac
 		Architecture: "amd64",
 	}
 
-	img, err := artifactRegistry.GetImage(childCtx, templateId, buildId, platform)
+	img, err := artifactRegistry.EnsureImage(childCtx, templateId, buildId, platform)
 	if err != nil {
 		return nil, fmt.Errorf("error pulling image: %w", err)
 	}

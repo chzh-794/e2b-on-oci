@@ -950,7 +950,13 @@ EOF
 ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'echo "✓ Orchestrator configuration created"'
 
 echo -e "\n${YELLOW}Creating Template Manager configuration...${NC}"
-cat <<EOF | ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'cat > ~/e2b/template-manager.env'
+
+# Safely quote OCIR credentials for the remote env file
+TM_OCIR_USERNAME=$(printf '%q' "${OCIR_USERNAME}")
+TM_OCIR_PASSWORD=$(printf '%q' "${OCIR_PASSWORD}")
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} <<EOF
+set -e
+cat > ~/e2b/template-manager.env <<ENV
 # Storage Configuration (OCI)
 STORAGE_PROVIDER=OCIBucket
 TEMPLATE_BUCKET_NAME=${TEMPLATE_BUCKET_NAME}
@@ -960,6 +966,9 @@ OCI_NAMESPACE=${OCI_NAMESPACE}
 # Artifacts Registry Configuration (OCIR)
 ARTIFACTS_REGISTRY_PROVIDER=OCI_OCIR
 OCI_CONTAINER_REPOSITORY_NAME=${OCI_CONTAINER_REPOSITORY_NAME}
+OCIR_USERNAME=${TM_OCIR_USERNAME}
+OCIR_PASSWORD=${TM_OCIR_PASSWORD}
+OCIR_FALLBACK_BASE_IMAGE=${OCIR_FALLBACK_BASE_IMAGE:-ubuntu:22.04}
 
 # Firecracker Configuration
 FIRECRACKER_BIN_PATH=/usr/local/bin/firecracker
@@ -987,7 +996,7 @@ CONSUL_URL=http://localhost:8500
 SERVICE_DISCOVERY_ORCHESTRATOR_PROVIDER=DNS
 SERVICE_DISCOVERY_ORCHESTRATOR_DNS_RESOLVER_ADDRESS=127.0.0.1:8600
 SERVICE_DISCOVERY_ORCHESTRATOR_DNS_QUERY=orchestrator.service.consul
-
+ENV
 EOF
 ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'echo "✓ Template Manager configuration created"'
 

@@ -65,7 +65,7 @@ resource "oci_identity_policy" "service_policy" {
     "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to read postgres-work-requests in compartment ${data.oci_identity_compartment.target_compartment.name}",
     "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to manage postgres-configuration in compartment ${data.oci_identity_compartment.target_compartment.name}",
     "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to {REDIS_CLUSTER_USE} in compartment ${data.oci_identity_compartment.target_compartment.name}",
-    "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to manage buckets in compartment ${data.oci_identity_compartment.target_compartment.name}",
+    "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to manage object-family in compartment ${data.oci_identity_compartment.target_compartment.name}",
     "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to manage repos in compartment ${data.oci_identity_compartment.target_compartment.name}"
   ]
 }

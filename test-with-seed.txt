@@ -13,7 +13,7 @@ End-to-end (with optional seed push to OCIR) – aligned with README.md
 
 3) Prepare deploy.env
 - Copy `deploy.env.example` → `deploy.env`.
-- Fill IPs/DB/optional Redis plus OCI storage/registry vars: `OCI_REGION`, `OCI_NAMESPACE`, `TEMPLATE_BUCKET_NAME`, `OCI_CONTAINER_REPOSITORY_NAME` (from Terraform outputs).
+- Fill IPs/DB/optional Redis plus OCI storage/registry vars: `OCI_REGION`, `OCI_NAMESPACE`, `TEMPLATE_BUCKET_NAME`, `OCI_CONTAINER_REPOSITORY_NAME` (from Terraform outputs), and OCIR auth: `OCIR_USERNAME="<namespace>/<username>"`, `OCIR_PASSWORD="<auth-token>"` (User Settings → Auth Tokens).
 
 4) Stage and build
 - Run `./deploy-poc.sh` (stages code, builds on hosts, writes envs with OCIBucket/OCI_OCIR).
@@ -26,7 +26,7 @@ End-to-end (with optional seed push to OCIR) – aligned with README.md
 6) Optional: push seed image to OCIR before triggering a build
 - Export seed vars on your workstation:  
   `export OCIR_TEMPLATE_REPOSITORY_PATH="<region>.ocir.io/<namespace>/<repo>"`  
-  `export OCIR_USERNAME="<user or namespace/username>"`  
+  `export OCIR_USERNAME="<namespace>/<username>"`  
   `export OCIR_PASSWORD="<auth token>"`
 - Run `./seed-template-image.sh --template-id <template> --build-id <build> --client-host <client-pool-ip> --bastion-host <bastion-ip> --dockerfile "<Dockerfile or use --context>"`
 - This tags/pushes `<region>.ocir.io/<namespace>/<repo>:<template>-<build>` to OCIR; template-manager can reuse it without rebuilding locally.
@@ -40,4 +40,5 @@ End-to-end (with optional seed push to OCIR) – aligned with README.md
 
 Notes
 - Services use Instance Principal to fetch OCIR tokens; OCIR_USERNAME/OCIR_PASSWORD are only needed for the optional seed push.
+- If the OCIR tag is missing, template-manager will bootstrap from a fallback base image (default `ubuntu:22.04`, override `OCIR_FALLBACK_BASE_IMAGE`) and push it under the requested tag.
 - Keep region settings aligned across packaging, Terraform, and deploy.env to avoid mismatched endpoints.

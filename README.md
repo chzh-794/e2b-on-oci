@@ -45,7 +45,8 @@ The sections below expand each step in detail.
 - OCI command-line configured locally **or** access to the bastion host created by `terraform-base`.
 - Go 1.21+ installed on API and Client pool instances (installed automatically by `deploy-poc.sh`).
 - Ability to reach the upstream Firecracker release buckets (used by the provisioning script to fetch kernels and the `firecracker` binary).
-- Optional (only for manual OCIR seeding via `seed-template-image.sh`): `OCIR_USERNAME`/`OCIR_PASSWORD` (OCI auth token). Runtime pulls/deletes use Instance Principal automatically.
+- OCIR pulls/pushes require a registry username + auth token. Set `OCIR_USERNAME` = `<namespace>/<username>` and `OCIR_PASSWORD` = an OCI Auth Token (User menu → Auth Tokens). These are used by template-manager/orchestrator to pull from/push to OCIR.
+- If the requested OCIR tag is missing, template-manager will bootstrap from a fallback base image (default `ubuntu:22.04`, override with `OCIR_FALLBACK_BASE_IMAGE`) and push it under the target tag.
 
 ### Build Process
 
@@ -125,7 +126,7 @@ All steps below run from your workstation inside `e2b-on-oci/`.
    - `BASTION_HOST`, `SERVER_POOL_*`, `API_POOL_*`, `CLIENT_POOL_*`: open the OCI Console → **Compute → Instances**, select the compartment you targeted with Terraform, and copy each instance’s public/private IP from the table.
    - `POSTGRES_HOST`: OCI Console → **Oracle Database → PostgreSQL**, select the DB system created by `terraform-base`, and copy its hostname (format `primary.<hash>.postgresql.<region>.oci.oraclecloud.com`).
    - Redis settings are optional—the client-proxy uses an in-memory catalog in this POC, so you can leave `REDIS_ENDPOINT` unset unless you explicitly point at the managed Redis cluster.
-   - **Object Storage & OCIR (required at runtime):** `OCI_REGION`, `OCI_NAMESPACE`, `TEMPLATE_BUCKET_NAME`, `OCI_CONTAINER_REPOSITORY_NAME` (use outputs from `terraform-base` for namespace/repo, and the chosen template bucket).
+   - **Object Storage & OCIR (required at runtime):** `OCI_REGION`, `OCI_NAMESPACE`, `TEMPLATE_BUCKET_NAME`, `OCI_CONTAINER_REPOSITORY_NAME` (use outputs from `terraform-base` for namespace/repo, and the chosen template bucket). Set `OCIR_USERNAME`/`OCIR_PASSWORD` (auth token) so services can pull from OCIR.
 3. `deploy-poc.sh` and `deploy-services.sh` automatically source `deploy.env`, so once the file is filled out you can run the scripts without additional prompts.
 
 1. Ensure you can reach the bastion via SSH:
@@ -250,11 +251,11 @@ With Nomad jobs running and the database initialized, the API is immediately rea
        http://127.0.0.1:50001/templates/<template-id>/builds/<build-id>"
    ```
 
-   Template-manager logs on the client pool (`nomad alloc logs -stderr <alloc> template-manager`) should show the build progressing to completion. The services use Instance Principal to fetch short-lived OCIR tokens automatically; no registry username/password is required for runtime pulls.
+   Template-manager logs on the client pool (`nomad alloc logs -stderr <alloc> template-manager`) should show the build progressing to completion.
 
    **Optional: push seed image to OCIR.** If you want `seed-template-image.sh` to push to OCIR (instead of local-only), set:
    - `OCIR_TEMPLATE_REPOSITORY_PATH="<region>.ocir.io/<namespace>/<repo>"` (aligns with `OCI_REGION`/`OCI_NAMESPACE`/`OCI_CONTAINER_REPOSITORY_NAME`)
-   - `OCIR_USERNAME`, `OCIR_PASSWORD` (an OCI auth token or registry login). The script does not yet mint a token via Instance Principal.
+   - `OCIR_USERNAME`, `OCIR_PASSWORD` (OCI registry username + Auth Token; create under User Settings → Auth Tokens). The script does not mint a token via Instance Principal.
 
    **Note:** The `validate-api.sh` script automatically handles template building and seeding, so manual use of `seed-template-image.sh` is only needed for custom template builds outside of validation.
 
@@ -315,7 +316,7 @@ With the template cached and the catalog populated, run a full sandbox round-tri
 
 These steps prove CRUD + execution parity with the AWS flow.
 
-> **Snapshot/storage:** Template artifacts are stored in OCI Object Storage (`TEMPLATE_BUCKET_NAME`) and images in OCIR; local copies may exist on the client for runtime. Ensure envs are set for `STORAGE_PROVIDER=OCIBucket` and `ARTIFACTS_REGISTRY_PROVIDER=OCI_OCIR`.
+> **Snapshot/storage:** Template artifacts are stored in OCI Object Storage (`TEMPLATE_BUCKET_NAME`) and images in OCIR; local copies may exist on the client for runtime. Ensure envs are set for `STORAGE_PROVIDER=OCIBucket`, `ARTIFACTS_REGISTRY_PROVIDER=OCI_OCIR`, and `OCIR_USERNAME`/`OCIR_PASSWORD` (auth token).
 
 ## 8. Validation
 
