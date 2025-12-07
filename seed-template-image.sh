@@ -3,6 +3,10 @@
 # Seed a template Docker image on the Nomad client node so the local
 # Template Manager (ARTIFACTS_REGISTRY_PROVIDER=Local) can pull it during a build.
 #
+# If OCIR_TEMPLATE_REPOSITORY_PATH is set, the script will also tag and push
+# the built image to OCIR as:
+#   ${OCIR_TEMPLATE_REPOSITORY_PATH}:${template-id}-${build-id}
+#
 # Usage:
 #   ./seed-template-image.sh --template-id <template> --build-id <uuid> \
 #     [--client-host <ip>] [--bastion-host <ip>] [--ssh-user ubuntu] \
@@ -38,7 +42,7 @@ Optional arguments:
   --ssh-user        SSH username (default: ${SSH_USER})
   --ssh-key         SSH private key (default: ${SSH_KEY})
   --context         Docker build context directory (required if not using --dockerfile)
-  --dockerfile       Dockerfile content as string (required if not using --context)
+  --dockerfile      Dockerfile content as string (required if not using --context)
 
 Example:
   ./seed-template-image.sh --template-id base-poc --build-id 123e4567-e89b-12d3-a456-426614174000 \\
@@ -142,7 +146,7 @@ fi
 if [[ -n "${DOCKERFILE:-}" ]]; then
   echo "Dockerfile  : (provided via --dockerfile)"
 else
-echo "Context     : ${DOCKER_CONTEXT}"
+  echo "Context     : ${DOCKER_CONTEXT}"
 fi
 echo ""
 
@@ -157,7 +161,7 @@ if [[ -n "${DOCKERFILE:-}" ]]; then
   printf '%s' "${DOCKERFILE}" | ssh "${SSH_BASE_OPTS[@]}" "${SSH_USER}@${CLIENT_HOST}" "cat > '${REMOTE_PATH}/Dockerfile'"
 else
   # Copy context directory
-scp "${SSH_BASE_OPTS[@]}" -r "${DOCKER_CONTEXT}/." "${SSH_USER}@${CLIENT_HOST}:${REMOTE_PATH}/"
+  scp "${SSH_BASE_OPTS[@]}" -r "${DOCKER_CONTEXT}/." "${SSH_USER}@${CLIENT_HOST}:${REMOTE_PATH}/"
 fi
 
 echo ""
@@ -172,6 +176,43 @@ sudo docker build --pull --tag "${TEMPLATE_ID}:${BUILD_ID}" .
 sudo docker image inspect "${TEMPLATE_ID}:${BUILD_ID}" >/dev/null
 EOF
 
+#
+# 2b: Optionally tag & push to OCIR if OCIR_* envs are set
+#
+if [[ -n "${OCIR_TEMPLATE_REPOSITORY_PATH:-}" ]]; then
+  if [[ -z "${OCIR_USERNAME:-}" || -z "${OCIR_PASSWORD:-}" ]]; then
+    echo "⚠ OCIR_TEMPLATE_REPOSITORY_PATH is set but OCIR_USERNAME or OCIR_PASSWORD is missing."
+    echo "  Skipping OCIR push."
+  else
+    OCIR_REGISTRY="${OCIR_TEMPLATE_REPOSITORY_PATH%%/*}"  # e.g. us-ashburn-1.ocir.io
+    OCIR_IMAGE_TAG="${OCIR_TEMPLATE_REPOSITORY_PATH}:${TEMPLATE_ID}-${BUILD_ID}"
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  [2b] Tagging & pushing image to OCIR"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "OCIR registry : ${OCIR_REGISTRY}"
+    echo "OCIR repo/tag : ${OCIR_IMAGE_TAG}"
+
+    ssh "${SSH_BASE_OPTS[@]}" "${SSH_USER}@${CLIENT_HOST}" <<EOF
+set -euo pipefail
+echo "Tagging local image as ${OCIR_IMAGE_TAG}..."
+sudo docker tag "${TEMPLATE_ID}:${BUILD_ID}" "${OCIR_IMAGE_TAG}"
+
+echo "Logging into OCIR..."
+echo "${OCIR_PASSWORD}" | sudo docker login "${OCIR_REGISTRY}" -u "${OCIR_USERNAME}" --password-stdin
+
+echo "Pushing image to OCIR: ${OCIR_IMAGE_TAG}..."
+sudo docker push "${OCIR_IMAGE_TAG}"
+
+echo "✔ Image pushed to OCIR: ${OCIR_IMAGE_TAG}"
+EOF
+  fi
+else
+  echo ""
+  echo "OCIR_TEMPLATE_REPOSITORY_PATH is not set; skipping OCIR push (Local-only mode)."
+fi
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  [3/3] Verifying local registry state"
@@ -181,8 +222,8 @@ ssh "${SSH_BASE_OPTS[@]}" "${SSH_USER}@${CLIENT_HOST}" "sudo docker image ls '${
 
 echo ""
 echo "✓ Template image '${TEMPLATE_ID}:${BUILD_ID}' is ready on ${CLIENT_HOST}"
+if [[ -n "${OCIR_TEMPLATE_REPOSITORY_PATH:-}" ]]; then
+  echo "  and pushed to OCIR as '${OCIR_IMAGE_TAG}'"
+fi
 echo "You can now trigger the Template Manager build:"
 echo "  POST /templates/${TEMPLATE_ID}/builds/${BUILD_ID}"
-
-
-

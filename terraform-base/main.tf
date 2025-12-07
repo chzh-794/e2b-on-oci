@@ -555,6 +555,18 @@ module "object_storage_buckets" {
   bucket_name    = each.value
 }
 
+data "oci_objectstorage_namespace" "ns" {
+  compartment_id = var.compartment_ocid
+}
+
+resource "oci_artifacts_container_repository" "template_registry" {
+  count          = var.enable_ocir ? 1 : 0
+  compartment_id = var.compartment_ocid
+  display_name   = var.ocir_repository_display_name
+  is_public      = false
+  is_immutable   = false
+}
+
 # ===================================================================================================
 # POSTGRESQL (MANAGED SERVICE)
 # ===================================================================================================

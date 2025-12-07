@@ -1,0 +1,43 @@
+End-to-end (with optional seed push to OCIR) – aligned with README.md
+
+0) Prereqs
+- Regions must match across Terraform (`var.region`), packaging (`./package_terraform_bundles.sh <region>`), and runtime (`OCI_REGION` in deploy.env).
+- For seed push only: obtain OCIR credentials (username + auth token/password) and set `OCIR_TEMPLATE_REPOSITORY_PATH` = `<region>.ocir.io/<namespace>/<repo>`. Runtime services still use Instance Principal.
+
+1) Package Terraform bundles
+- From repo root: `./package_terraform_bundles.sh <region>` (defaults to us-ashburn-1).
+
+2) Apply Terraform (Resource Manager)
+- Apply stacks in order: `e2b-oci-policies.zip` → `e2b-oci-stack.zip` → `e2b-oci-cluster.zip`.
+- Record outputs: `object_storage_buckets`, `oci_namespace`, `ocir_repository`, bastion/client/API IPs, DB host.
+
+3) Prepare deploy.env
+- Copy `deploy.env.example` → `deploy.env`.
+- Fill IPs/DB/optional Redis plus OCI storage/registry vars: `OCI_REGION`, `OCI_NAMESPACE`, `TEMPLATE_BUCKET_NAME`, `OCI_CONTAINER_REPOSITORY_NAME` (from Terraform outputs).
+
+4) Stage and build
+- Run `./deploy-poc.sh` (stages code, builds on hosts, writes envs with OCIBucket/OCI_OCIR).
+- Run `./scripts/check-pre-deploy.sh`.
+
+5) Register services
+- Run `./deploy-services.sh`.
+- Run `./scripts/check-post-deploy.sh`.
+
+6) Optional: push seed image to OCIR before triggering a build
+- Export seed vars on your workstation:  
+  `export OCIR_TEMPLATE_REPOSITORY_PATH="<region>.ocir.io/<namespace>/<repo>"`  
+  `export OCIR_USERNAME="<user or namespace/username>"`  
+  `export OCIR_PASSWORD="<auth token>"`
+- Run `./seed-template-image.sh --template-id <template> --build-id <build> --client-host <client-pool-ip> --bastion-host <bastion-ip> --dockerfile "<Dockerfile or use --context>"`
+- This tags/pushes `<region>.ocir.io/<namespace>/<repo>:<template>-<build>` to OCIR; template-manager can reuse it without rebuilding locally.
+
+7) Validate API/template flow
+- Run `./scripts/validate-api.sh` to exercise template build/push and object storage uploads. With the seed pushed, template-manager can pull the pre-published image from OCIR.
+
+8) Manual console checks after validation
+- Object Storage: OCI Console → Object Storage → Buckets → your template bucket (e.g., fc-template). Confirm latest build prefix contains `rootfs.ext4`, `memfile`, `snapfile`.
+- OCIR: OCI Console → Container Registry → Repositories. Confirm your repo (e.g., e2b-templates/<template-id>) shows the seed tag (`<template>-<build>`) and the template-manager output tag (build ID) with recent push times.
+
+Notes
+- Services use Instance Principal to fetch OCIR tokens; OCIR_USERNAME/OCIR_PASSWORD are only needed for the optional seed push.
+- Keep region settings aligned across packaging, Terraform, and deploy.env to avoid mismatched endpoints.

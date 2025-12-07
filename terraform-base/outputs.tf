@@ -83,6 +83,21 @@ output "object_storage_buckets" {
   } : {}
 }
 
+output "oci_namespace" {
+  description = "Object Storage namespace (also used for OCIR)"
+  value       = var.enable_object_storage ? data.oci_objectstorage_namespace.ns.namespace : null
+}
+
+output "ocir_repository" {
+  description = "OCIR endpoint for template images (<region>.ocir.io/<namespace>/<repo>)"
+  value = var.enable_ocir ? format(
+    "%s.ocir.io/%s/%s",
+    var.region,
+    data.oci_objectstorage_namespace.ns.namespace,
+    var.ocir_repository_display_name,
+  ) : null
+}
+
 output "postgresql_db_system_id" {
   description = "OCID of the PostgreSQL DB system"
   value       = var.enable_postgresql ? module.postgresql[0].db_system_id : null

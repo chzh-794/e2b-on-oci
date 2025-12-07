@@ -53,8 +53,10 @@ base_domain = "example.com"  # Or leave as "test.local" for testing
 
 # Managed Services
 # enable_object_storage             = true
+# enable_ocir                       = true
 # enable_postgresql                 = true
 # enable_redis                      = true
+# ocir_repository_display_name      = "e2b-templates"
 # postgresql_db_version             = "15"
 # postgresql_instance_count         = 1
 # postgresql_instance_memory_gbs    = 64
@@ -63,4 +65,3 @@ base_domain = "example.com"  # Or leave as "test.local" for testing
 # redis_node_count                  = 3
 # redis_node_memory_gbs             = 16
 # redis_software_version            = "V7_0_5"
-

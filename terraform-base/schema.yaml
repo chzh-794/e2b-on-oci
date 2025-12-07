@@ -36,8 +36,10 @@ variableGroups:
   - title: "Managed Services"
     variables:
       - enable_object_storage
+      - enable_ocir
       - enable_postgresql
       - enable_redis
+      - ocir_repository_display_name
       - postgresql_db_version
       - postgresql_instance_count
       - postgresql_instance_memory_gbs
@@ -163,6 +165,12 @@ variables:
     description: Create Object Storage buckets for templates, kernels, and artifacts
     default: true
 
+  enable_ocir:
+    type: boolean
+    title: Enable OCIR Repository
+    description: Create an OCIR container repository for template images
+    default: true
+
   enable_postgresql:
     type: boolean
     title: Enable Managed PostgreSQL
@@ -219,6 +227,12 @@ variables:
     description: Hard-coded PostgreSQL admin password for quick validation. Replace with OCI Vault in production.
     default: "E2bP0cPostgres!2025"
 
+  ocir_repository_display_name:
+    type: string
+    title: OCIR Repository Name
+    description: Display name for the Container Registry repository that stores template images
+    default: "e2b-templates"
+
   redis_node_count:
     type: integer
     title: Redis Node Count
@@ -256,6 +270,8 @@ outputGroups:
   - title: "Managed Services"
     outputs:
       - object_storage_buckets
+      - oci_namespace
+      - ocir_repository
       - postgresql_db_system_id
       - redis_primary_fqdn
 
@@ -285,6 +301,16 @@ outputs:
     title: Object Storage Buckets
     description: Map of object storage buckets provisioned for E2B artifacts
 
+  oci_namespace:
+    type: string
+    title: Object Storage Namespace
+    description: Namespace used for Object Storage and OCIR paths
+
+  ocir_repository:
+    type: string
+    title: OCIR Repository Endpoint
+    description: Full OCIR path (region/namespace/repo) for template images
+
   postgresql_db_system_id:
     type: ocid
     title: PostgreSQL DB System OCID
@@ -299,5 +325,3 @@ outputs:
     type: string
     title: PostgreSQL Admin Password
     description: Hard-coded PostgreSQL admin password (POC only; rotate manually after deployment)
-
-

@@ -1,0 +1,45 @@
+OCIR + Object Storage migration summary (repo: e2b-on-oci)
+
+High-level
+- Added full OCI Object Storage provider and OCIR registry provider to shared libs, wiring services to use OCI instead of Local.
+- Introduced Terraform OCIR resource/outputs and required runtime env vars (region, namespace, bucket, repo).
+- Updated Nomad jobs and deploy scripts to use OCIBucket/OCI_OCIR; added optional seed push to OCIR.
+- README updated with region alignment, OCI envs, and optional OCIR credential guidance; added test runbooks with/without seed push.
+
+Code changes by file
+- packages/shared/pkg/storage/storage.go: Registered OCIStorageProvider=OCIBucket and dispatch to new provider.
+- packages/shared/pkg/storage/storage_oci.go (new): OCI Object Storage client using instance principal; supports Write/Read/ReadAt (range), Size, Delete, DeleteObjectsWithPrefix with pagination; uses env OCI_REGION (required), OCI_NAMESPACE (optional override, otherwise fetched via GetNamespace).
+- packages/shared/pkg/artifacts-registry/registry.go: Added OCI_OCIR provider constant and switch.
+- packages/shared/pkg/artifacts-registry/registry_oci.go (new): OCIR registry via Artifacts SDK using instance principal to mint auth tokens; builds refs as <region>.ocir.io/<namespace>/<repo>/<templateId>:<buildId>; remote pulls/deletes use go-containerregistry with fetched token; propagates not-found as ErrImageNotExists.
+- packages/shared/go.mod / go.sum: Added github.com/oracle/oci-go-sdk/v65 v65.105.0 dependency.
+- packages/orchestrator/upload-envs.sh: Switched env uploads from GCS to OCI Object Storage (oci os object put with instance principal).
+- nomad/template-manager.hcl: Env now OCIBucket/OCI_OCIR with OCI_REGION/OCI_NAMESPACE/OCI_CONTAINER_REPOSITORY_NAME; meta storage_mode set to oci.
+- nomad/orchestrator.hcl: Env now OCIBucket/OCI_OCIR with OCI REGION/NAMESPACE and repo name (values currently hardcoded; packaging replaces __REGION__).
+- deploy-poc.sh: Requires OCI_REGION/OCI_NAMESPACE/TEMPLATE_BUCKET_NAME/OCI_CONTAINER_REPOSITORY_NAME; writes OCI storage/registry envs into api/orchestrator/template-manager env files (OCIBucket/OCI_OCIR).
+- deploy.env.example: Added OCI region/namespace/template bucket/OCIR repo entries.
+- seed-template-image.sh: Optional OCIR push support using OCIR_TEMPLATE_REPOSITORY_PATH + OCIR_USERNAME/OCIR_PASSWORD; otherwise still builds locally on client.
+- terraform-base/variables.tf: Added enable_ocir toggle and ocir_repository_display_name.
+- terraform-base/main.tf: Added Object Storage namespace data source and OCIR container repository resource (conditional on enable_ocir).
+- terraform-base/outputs.tf: Added oci_namespace and ocir_repository outputs (full path).
+- terraform-base/schema.yaml: Exposed enable_ocir and ocir_repository_display_name variables; added outputs oci_namespace and ocir_repository; region grouping unchanged.
+- terraform-base/terraform.tfvars.example: Added enable_ocir and ocir_repository_display_name examples.
+- README.md: Updated for OCI storage/registry runtime, region alignment across packaging/TF/deploy.env, optional OCIR seed credentials, and clarified template artifacts in Object Storage/OCIR.
+- test-wo-seed.txt (new): End-to-end steps without seed push; manual console checks for Object Storage/OCIR.
+- test-with-seed.txt (new): End-to-end steps with optional seed push; manual console checks.
+
+Runtime/auth notes
+- Services (template-manager/orchestrator) use Instance Principal via OCI SDK to get OCIR authorization tokens; no OCIR username/password needed at runtime.
+- Seed script uses provided OCIR_USERNAME/OCIR_PASSWORD only if you opt to push; otherwise builds locally.
+- Object Storage access uses Instance Principal (DefaultConfigProvider) with required OCI_REGION (namespace fetched if not provided).
+
+Region alignment
+- Three touchpoints must match: Terraform var.region when applying stacks; packaging substitution (`./package_terraform_bundles.sh <region>` for Nomad/user-data); runtime `OCI_REGION` in deploy.env used by services.
+
+Validation/testing
+- `validate-api.sh` exercises template build/push and storage pulls; `check-pre-deploy.sh`/`check-post-deploy.sh` remain the health gates.
+- Manual checks: OCI Console → Object Storage bucket (build artifacts under build ID), OCI Console → Container Registry repository (image tags for template builds, and seed tag if pushed).
+
+Open follow-ups (if desired)
+- Add Instance Principal token minting to seed-template-image.sh to remove need for OCIR_USERNAME/OCIR_PASSWORD.
+- Parameterize hardcoded values in Nomad envs (currently set to example bucket/namespace/repo) to consume templated variables consistently.
+- Align go toolchain locally (go mod declares 1.24.3; local go test failed on version parsing; tests need a matching Go version).

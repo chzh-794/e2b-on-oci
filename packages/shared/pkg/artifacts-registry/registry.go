@@ -16,6 +16,7 @@ type RegistryProvider string
 const (
 	GCPStorageProvider   RegistryProvider = "GCP_ARTIFACTS"
 	AWSStorageProvider   RegistryProvider = "AWS_ECR"
+	OCIStorageProvider   RegistryProvider = "OCI_OCIR"
 	LocalStorageProvider RegistryProvider = "Local"
 
 	DefaultRegistryProvider RegistryProvider = GCPStorageProvider
@@ -42,6 +43,8 @@ func GetArtifactsRegistryProvider() (ArtifactsRegistry, error) {
 		return NewAWSArtifactsRegistry(setupCtx)
 	case GCPStorageProvider:
 		return NewGCPArtifactsRegistry(setupCtx)
+	case OCIStorageProvider:
+		return NewOCIArtifactsRegistry(setupCtx)
 	case LocalStorageProvider:
 		return NewLocalArtifactsRegistry()
 	}

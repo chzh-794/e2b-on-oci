@@ -41,7 +41,13 @@ job "orchestrator" {
       }
 
       env {
-        NODE_ID = "$${node.unique.id}"
+        NODE_ID                      = "$${node.unique.id}"
+        STORAGE_PROVIDER             = "OCIBucket"
+        TEMPLATE_BUCKET_NAME         = "fc-template"
+        OCI_REGION                   = "us-ashburn-1"
+        OCI_NAMESPACE                = "replace-with-namespace"
+        ARTIFACTS_REGISTRY_PROVIDER  = "OCI_OCIR"
+        OCI_CONTAINER_REPOSITORY_NAME = "e2b-templates"
       }
 
       config {
