@@ -40,5 +40,5 @@ End-to-end (with optional seed push to OCIR) – aligned with README.md
 
 Notes
 - Services use Instance Principal to fetch OCIR tokens; OCIR_USERNAME/OCIR_PASSWORD are only needed for the optional seed push.
-- If the OCIR tag is missing, template-manager will bootstrap from a fallback base image (default `ubuntu:22.04`, override `OCIR_FALLBACK_BASE_IMAGE`) and push it under the requested tag.
+- If the OCIR tag is missing, template-manager will bootstrap from a fallback base image (default `python:3.10-slim`, override `OCIR_FALLBACK_BASE_IMAGE`) and push it under the requested tag.
 - Keep region settings aligned across packaging, Terraform, and deploy.env to avoid mismatched endpoints.

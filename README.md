@@ -46,7 +46,7 @@ The sections below expand each step in detail.
 - Go 1.21+ installed on API and Client pool instances (installed automatically by `deploy-poc.sh`).
 - Ability to reach the upstream Firecracker release buckets (used by the provisioning script to fetch kernels and the `firecracker` binary).
 - OCIR pulls/pushes require a registry username + auth token. Set `OCIR_USERNAME` = `<namespace>/<username>` and `OCIR_PASSWORD` = an OCI Auth Token (User menu → Auth Tokens). These are used by template-manager/orchestrator to pull from/push to OCIR.
-- If the requested OCIR tag is missing, template-manager will bootstrap from a fallback base image (default `ubuntu:22.04`, override with `OCIR_FALLBACK_BASE_IMAGE`) and push it under the target tag.
+- If the requested OCIR tag is missing, template-manager will bootstrap from a fallback base image (default `python:3.10-slim`, override with `OCIR_FALLBACK_BASE_IMAGE`) and push it under the target tag.
 
 ### Build Process
 
