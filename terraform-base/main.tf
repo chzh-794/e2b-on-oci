@@ -22,13 +22,6 @@ provider "oci" {
   # Default provider for compute resources in user-specified region
 }
 
-# Provider for home region (IAM resources must be created in home region)
-provider "oci" {
-  alias  = "home"
-  region = "us-ashburn-1"
-  # OCI Resource Manager injects auth via InstancePrincipal
-}
-
 # Get compartment details to retrieve compartment name for IAM policies
 data "oci_identity_compartment" "target_compartment" {
   id = var.compartment_ocid
@@ -483,7 +476,7 @@ resource "oci_core_security_list" "e2b_public_lb_sl" {
     description      = "Allow traffic to backend services"
   }
 }
-
+ 
 # Public Load Balancer Subnet
 resource "oci_core_subnet" "e2b_public_lb_subnet" {
   count                      = var.create_load_balancer ? 1 : 0
@@ -502,52 +495,6 @@ resource "oci_core_subnet" "e2b_public_lb_subnet" {
 # ===================================================================================================
 
 # Update public security list to include E2B API and service ports
-# ===================================================================================================
-# IAM: DYNAMIC GROUP AND POLICY FOR BASTION
-# ===================================================================================================
-
-# Dynamic group for bastion instance to use instance principal auth (created in home region)
-resource "oci_identity_dynamic_group" "service_dynamic_group" {
-  provider       = oci.home
-  compartment_id = var.tenancy_ocid
-  name           = "${var.prefix}-service-dynamic-group"
-  description    = "E2B service instances within the compartment (bastion, clusters, managed services)"
-  matching_rule  = "instance.compartment.id = '${var.compartment_ocid}'"
-}
-
-# Policy to allow bastion to manage compute resources for Packer
-# Following agent-shepherd pattern: policy created in the compartment (not at tenancy root)
-# Dynamic group is at tenancy root, but policy is in the compartment where resources are managed
-resource "oci_identity_policy" "bastion_policy" {
-  provider       = oci.home
-  compartment_id = var.tenancy_ocid
-  name           = "${var.prefix}-bastion-policy"
-  description    = "Policy for E2B bastion to manage compute resources via Packer"
-  
-  statements = [
-    "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to manage instance-family in compartment ${data.oci_identity_compartment.target_compartment.name}",
-    "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to manage compute-image-capability-schema in compartment ${data.oci_identity_compartment.target_compartment.name}",
-    "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to manage volume-family in compartment ${data.oci_identity_compartment.target_compartment.name}",
-    "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to manage virtual-network-family in compartment ${data.oci_identity_compartment.target_compartment.name}",
-  ]
-}
-
-resource "oci_identity_policy" "service_policy" {
-  provider       = oci.home
-  compartment_id = var.tenancy_ocid
-  name           = "${var.prefix}-service-policy"
-  description    = "Policy for E2B services to access managed resources"
-
-  statements = [
-    "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to manage postgres-db-systems in compartment ${data.oci_identity_compartment.target_compartment.name}",
-    "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to manage postgres-backups in compartment ${data.oci_identity_compartment.target_compartment.name}",
-    "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to read postgres-work-requests in compartment ${data.oci_identity_compartment.target_compartment.name}",
-    "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to manage postgres-configuration in compartment ${data.oci_identity_compartment.target_compartment.name}",
-    "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to {REDIS_CLUSTER_USE} in compartment ${data.oci_identity_compartment.target_compartment.name}",
-    "Allow dynamic-group ${oci_identity_dynamic_group.service_dynamic_group.name} to manage buckets in compartment ${data.oci_identity_compartment.target_compartment.name}"
-  ]
-}
-
 # ===================================================================================================
 # BASTION INSTANCE
 # ===================================================================================================
@@ -608,6 +555,18 @@ module "object_storage_buckets" {
   bucket_name    = each.value
 }
 
+data "oci_objectstorage_namespace" "ns" {
+  compartment_id = var.compartment_ocid
+}
+
+resource "oci_artifacts_container_repository" "template_registry" {
+  count          = var.enable_ocir ? 1 : 0
+  compartment_id = var.compartment_ocid
+  display_name   = var.ocir_repository_display_name
+  is_public      = false
+  is_immutable   = false
+}
+
 # ===================================================================================================
 # POSTGRESQL (MANAGED SERVICE)
 # ===================================================================================================
@@ -648,4 +607,3 @@ module "redis_cluster" {
   nsg_ids           = [oci_core_network_security_group.services_nsg.id]
   cluster_mode      = "NONSHARDED"
 }
-

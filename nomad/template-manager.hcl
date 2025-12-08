@@ -1,9 +1,9 @@
 job "template-manager" {
-  datacenters = ["us-ashburn-1"]
+  datacenters = ["__REGION__"]
   type        = "service"
   priority    = 70
   meta = {
-    storage_mode = "local"
+    storage_mode = "oci"
   }
 
   reschedule {
@@ -45,10 +45,12 @@ job "template-manager" {
 
       env {
         NODE_ID                          = "$${node.unique.id}"
-        STORAGE_PROVIDER                 = "Local"
-        LOCAL_TEMPLATE_STORAGE_BASE_PATH = "/var/e2b/templates"
-        TEMPLATE_BUCKET_NAME             = "local"
-        ARTIFACTS_REGISTRY_PROVIDER      = "Local"
+        STORAGE_PROVIDER                 = "OCIBucket"
+        TEMPLATE_BUCKET_NAME             = "fc-template"
+        ARTIFACTS_REGISTRY_PROVIDER      = "OCI_OCIR"
+        OCI_REGION                       = "us-ashburn-1"
+        OCI_NAMESPACE                    = "replace-with-namespace"
+        OCI_CONTAINER_REPOSITORY_NAME    = "e2b-templates"
         SANDBOX_DEBUG_VM_LOGS            = "true"
       }
 

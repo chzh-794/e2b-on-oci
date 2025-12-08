@@ -16,6 +16,7 @@ type RegistryProvider string
 const (
 	GCPStorageProvider   RegistryProvider = "GCP_ARTIFACTS"
 	AWSStorageProvider   RegistryProvider = "AWS_ECR"
+	OCIStorageProvider   RegistryProvider = "OCI_OCIR"
 	LocalStorageProvider RegistryProvider = "Local"
 
 	DefaultRegistryProvider RegistryProvider = GCPStorageProvider
@@ -29,6 +30,8 @@ type ArtifactsRegistry interface {
 	GetTag(ctx context.Context, templateId string, buildId string) (string, error)
 	GetImage(ctx context.Context, templateId string, buildId string, platform containerregistry.Platform) (containerregistry.Image, error)
 	Delete(ctx context.Context, templateId string, buildId string) error
+	// EnsureImage pulls the image; if missing, it bootstraps a base image and pushes it under the requested tag, then returns it.
+	EnsureImage(ctx context.Context, templateId string, buildId string, platform containerregistry.Platform) (containerregistry.Image, error)
 }
 
 func GetArtifactsRegistryProvider() (ArtifactsRegistry, error) {
@@ -42,6 +45,8 @@ func GetArtifactsRegistryProvider() (ArtifactsRegistry, error) {
 		return NewAWSArtifactsRegistry(setupCtx)
 	case GCPStorageProvider:
 		return NewGCPArtifactsRegistry(setupCtx)
+	case OCIStorageProvider:
+		return NewOCIArtifactsRegistry(setupCtx)
 	case LocalStorageProvider:
 		return NewLocalArtifactsRegistry()
 	}

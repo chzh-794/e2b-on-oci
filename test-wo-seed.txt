@@ -1,0 +1,36 @@
+End-to-end (no seed push) – aligned with README.md
+
+0) Prereqs
+- Ensure regions match across all steps: Terraform stack input `var.region`, `./package_terraform_bundles.sh <region>`, and runtime `OCI_REGION` in `deploy.env`.
+- Have OCI tenancy access; no OCIR username/password needed for runtime (Instance Principal is used).
+
+1) Package Terraform bundles
+- From repo root: `./package_terraform_bundles.sh <region>` (defaults to us-ashburn-1). This stamps `__REGION__` in Nomad/jobs/user-data.
+
+2) Apply Terraform (Resource Manager)
+- Apply in order: `e2b-oci-policies.zip` → `e2b-oci-stack.zip` → `e2b-oci-cluster.zip`.
+- Capture outputs for `object_storage_buckets`, `oci_namespace`, `ocir_repository`, bastion/client/API IPs, DB host.
+
+3) Prepare deploy.env
+- Copy `deploy.env.example` → `deploy.env`.
+- Set: `BASTION_HOST`, `SERVER_POOL_*`, `API_POOL_*`, `CLIENT_POOL_*`, `POSTGRES_*`, optional `REDIS_*`.
+- Set OCI storage/registry vars from Terraform outputs: `OCI_REGION`, `OCI_NAMESPACE`, `TEMPLATE_BUCKET_NAME` (e.g., fc-template), `OCI_CONTAINER_REPOSITORY_NAME` (e.g., e2b-templates).
+
+4) Stage and build
+- Run `./deploy-poc.sh` (stages repo, builds binaries on hosts, writes envs with OCIBucket/OCI_OCIR).
+- Run `./scripts/check-pre-deploy.sh`.
+
+5) Register services
+- Run `./deploy-services.sh`.
+- Run `./scripts/check-post-deploy.sh`.
+
+6) Validate API/template flow
+- Run `./scripts/validate-api.sh` (uses Instance Principal to pull/push from OCIR and Object Storage). No seed needed; template-manager handles image build/push and object storage uploads.
+
+7) Manual console checks after validation
+- Object Storage: OCI Console → Object Storage → Buckets → your template bucket (e.g., fc-template). Verify objects under the latest build ID prefix contain `rootfs.ext4`, `memfile`, `snapfile`.
+- OCIR: OCI Console → Developer Services → Container Registry → Repositories. Open the repo (e.g., e2b-templates/<template-id>) and confirm an image tag matching the build ID exists with recent push time.
+
+Notes
+- Runtime uses Instance Principal to fetch OCIR auth tokens automatically; no OCIR_USERNAME/OCIR_PASSWORD required when skipping seed push.
+- If you rerun deploy, keep regions consistent across packaging/TF/deploy.env.

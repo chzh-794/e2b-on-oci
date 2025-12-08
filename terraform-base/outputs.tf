@@ -67,11 +67,6 @@ output "bastion_instance_id" {
   value       = oci_core_instance.bastion.id
 }
 
-output "service_dynamic_group_id" {
-  description = "OCID of the dynamic group granting OCI services permissions to instances in the compartment"
-  value       = oci_identity_dynamic_group.service_dynamic_group.id
-}
-
 # ===================================================================================================
 # OBJECT STORAGE, POSTGRESQL, REDIS
 # ===================================================================================================
@@ -86,6 +81,21 @@ output "object_storage_buckets" {
       namespace = mod.namespace
     }
   } : {}
+}
+
+output "oci_namespace" {
+  description = "Object Storage namespace (also used for OCIR)"
+  value       = var.enable_object_storage ? data.oci_objectstorage_namespace.ns.namespace : null
+}
+
+output "ocir_repository" {
+  description = "OCIR endpoint for template images (<region>.ocir.io/<namespace>/<repo>)"
+  value = var.enable_ocir ? format(
+    "%s.ocir.io/%s/%s",
+    var.region,
+    data.oci_objectstorage_namespace.ns.namespace,
+    var.ocir_repository_display_name,
+  ) : null
 }
 
 output "postgresql_db_system_id" {
@@ -123,4 +133,3 @@ output "ubuntu_image_name" {
   description = "Name of the x86_64 Ubuntu 22.04 image (for debugging)"
   value       = local.ubuntu_image_name
 }
-

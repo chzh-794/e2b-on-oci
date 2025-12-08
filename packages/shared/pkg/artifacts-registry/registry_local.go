@@ -42,3 +42,7 @@ func (g *LocalArtifactsRegistry) GetImage(ctx context.Context, templateId string
 
 	return img, nil
 }
+
+func (g *LocalArtifactsRegistry) EnsureImage(ctx context.Context, templateId string, buildId string, platform containerregistry.Platform) (containerregistry.Image, error) {
+	return g.GetImage(ctx, templateId, buildId, platform)
+}
