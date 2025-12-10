@@ -77,11 +77,68 @@ normalize_region() {
     iad|IAD)
       echo "us-ashburn-1"
       ;;
+    sjc|SJC)
+      echo "us-sanjose-1"
+      ;;
     phx|PHX)
       echo "us-phoenix-1"
       ;;
+    yul|YUL)
+      echo "ca-montreal-1"
+      ;;
+    yto|YTO)
+      echo "ca-toronto-1"
+      ;;
     fra|FRA)
       echo "eu-frankfurt-1"
+      ;;
+    lhr|LHR)
+      echo "uk-london-1"
+      ;;
+    cwl|CWL)
+      echo "uk-cardiff-1"
+      ;;
+    zrh|ZRH)
+      echo "eu-zurich-1"
+      ;;
+    jed|JED)
+      echo "me-jeddah-1"
+      ;;
+    dxb|DXB)
+      echo "me-dubai-1"
+      ;;
+    jnb|JNB)
+      echo "af-johannesburg-1"
+      ;;
+    gru|GRU)
+      echo "sa-saopaulo-1"
+      ;;
+    scl|SCL)
+      echo "sa-santiago-1"
+      ;;
+    nrt|NRT)
+      echo "ap-tokyo-1"
+      ;;
+    kix|KIX)
+      echo "ap-osaka-1"
+      ;;
+    icn|ICN)
+      echo "ap-seoul-1"
+      ;;
+    bom|BOM)
+      echo "ap-mumbai-1"
+      ;;
+    hyd|HYD)
+      echo "ap-hyderabad-1"
+      ;;
+    sin|SIN)
+      echo "ap-singapore-1"
+      ;;
+    syd|SYD)
+      echo "ap-sydney-1"
+      ;;
+    mel|MEL)
+      echo "ap-melbourne-1"
       ;;
     *)
       echo "$value"
@@ -218,4 +275,3 @@ else
 fi
 
 log "Consul server bootstrap complete."
-

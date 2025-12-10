@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # -------------------------------------------------------------------------------------------------
-# Upload envs from disk to GCS
+# Upload envs from disk to OCI Object Storage
 # -------------------------------------------------------------------------------------------------
 # First argument is target dir name
 TARGET_DIR_NAME=$1
@@ -15,9 +15,14 @@ TEMPLATE_BUCKET_NAME=$2
 TEMPLATE_ID=$3
 # -------------------------------------------------------------------------------------------------
 
-echo "Uploading envs from ${TARGET_DIR_NAME} to GCS"
+echo "Uploading envs from ${TARGET_DIR_NAME} to OCI Object Storage"
 
-COMMAND="gcloud storage cp --verbosity error -n"
+COMMAND_BASE=(oci os object put --auth instance_principal --bucket-name "${TEMPLATE_BUCKET_NAME}" --force)
+if [ -n "${OCI_REGION:-}" ]; then
+  COMMAND_BASE+=(--region "${OCI_REGION}")
+else
+  echo "Warning: OCI_REGION not set; relying on OCI CLI defaults for region" >&2
+fi
 
 # Initialize counter for uploaded envs
 uploaded_env_count=0
@@ -68,19 +73,19 @@ for template_id in $(ls ${TARGET_DIR_NAME}); do
     continue
   fi
 
-  BUCKET_MEMFILE_PATH="gs://${TEMPLATE_BUCKET_NAME}/${BUILD_ID}/memfile"
-  BUCKET_ROOTFS_EXT4_PATH="gs://${TEMPLATE_BUCKET_NAME}/${BUILD_ID}/rootfs.ext4"
-  BUCKET_SNAPFILE_PATH="gs://${TEMPLATE_BUCKET_NAME}/${BUILD_ID}/snapfile"
+  BUCKET_MEMFILE_PATH="${BUILD_ID}/memfile"
+  BUCKET_ROOTFS_EXT4_PATH="${BUILD_ID}/rootfs.ext4"
+  BUCKET_SNAPFILE_PATH="${BUILD_ID}/snapfile"
 
   # Upload the files
   echo "Uploading memfile"
-  ${COMMAND} ${MEMFILE_PATH} ${BUCKET_MEMFILE_PATH} &
+  "${COMMAND_BASE[@]}" --name "${BUCKET_MEMFILE_PATH}" --file "${MEMFILE_PATH}" &
 
   echo "Uploading rootfs.ext4"
-  ${COMMAND} ${ROOTFS_EXT4_PATH} ${BUCKET_ROOTFS_EXT4_PATH} &
+  "${COMMAND_BASE[@]}" --name "${BUCKET_ROOTFS_EXT4_PATH}" --file "${ROOTFS_EXT4_PATH}" &
 
   echo "Uploading snapfile"
-  ${COMMAND} ${SNAPFILE_PATH} ${BUCKET_SNAPFILE_PATH} &
+  "${COMMAND_BASE[@]}" --name "${BUCKET_SNAPFILE_PATH}" --file "${SNAPFILE_PATH}" &
 
   # Wait for all background jobs to finish
   wait

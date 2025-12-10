@@ -78,6 +78,11 @@ func (g *GCPArtifactsRegistry) GetImage(ctx context.Context, templateId string, 
 	return img, nil
 }
 
+func (g *GCPArtifactsRegistry) EnsureImage(ctx context.Context, templateId string, buildId string, platform containerregistry.Platform) (containerregistry.Image, error) {
+	// GCP path relies on images being present; no auto-bootstrap here.
+	return g.GetImage(ctx, templateId, buildId, platform)
+}
+
 func (g *GCPArtifactsRegistry) getAuthToken(ctx context.Context) (*authn.Basic, error) {
 	authCfg := consts.DockerAuthConfig
 	if authCfg == "" {

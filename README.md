@@ -6,8 +6,9 @@ This runbook documents the standard procedure for deploying the E2B API and supp
 
 ```
 e2b-on-oci/
-├── terraform-base/        # Networking, bastion, IAM policies, object storage buckets, managed PostgreSQL/Redis (Stack 1)
-├── terraform-cluster/     # Nomad/Consul/API/client pools (Stack 2)
+├── terraform-policies/    # IAM dynamic group + policies for instance principals/Packer (Stack 1)
+├── terraform-base/        # Networking, bastion, object storage buckets, managed PostgreSQL/Redis (Stack 2)
+├── terraform-cluster/     # Nomad/Consul/API/client pools (Stack 3)
 ├── packages/              # Source code for API, orchestrator, client-proxy, template-manager, envd, shared libs
 ├── nomad/                 # Nomad job definitions (api.hcl, orchestrator.hcl, client-proxy.hcl, template-manager.hcl)
 ├── deploy-poc.sh          # Provisioning script that pushes binaries/configs and installs dependencies
@@ -17,9 +18,9 @@ e2b-on-oci/
 └── README.md              # This runbook
 ```
 
-- **terraform-base** and **terraform-cluster** remain separate stacks so you can iterate on cluster resources without recreating networking/DB resources. Zip each folder to produce `e2b-oci-stack.zip` (base) and `e2b-oci-cluster.zip` (cluster).
+- **terraform-policies**, **terraform-base**, and **terraform-cluster** remain separate stacks so you can iterate on cluster resources without recreating networking/DB resources. Package three stacks and apply them in order: (1) IAM-only `e2b-oci-policies.zip`, (2) `e2b-oci-stack.zip` (base), (3) `e2b-oci-cluster.zip` (cluster).
 - **packages/** source code is staged to instances and built directly on the target hosts (no cross-compilation needed).
-- **deploy-poc.sh** reads `deploy.env`, connects through the bastion, installs dependencies, uploads env files/binaries, and downloads Firecracker assets.
+- **deploy-poc.sh** reads `deploy.env`, connects through the bastion, installs dependencies, uploads env files/binaries, and downloads Firecracker assets. Services are wired for OCI Object Storage + OCIR (no Local storage/registry).
 - **terraform-cluster** user-data now enables the `e2b-cleanup-network.timer` on the client pool, which runs every minute to delete idle `ns-*` namespaces and detach orphaned `nbd` devices so template builds never exhaust the slot pool.
 - **deploy-services.sh** copies the Nomad job files and runs `nomad job run` for orchestrator, API, client-proxy, and template-manager.
 - **db/init-db.sh** seeds the managed PostgreSQL instance (schema + API keys). Automatically called by `deploy-poc.sh` Phase 1d.
@@ -27,12 +28,13 @@ e2b-on-oci/
 
 ## Quickstart Overview
 
-1. **Package Terraform** – upload the base and cluster stacks to OCI Resource Manager.
-2. **Apply Terraform** – provision OCI networking, IAM policies, managed services, and bring up the Nomad/Consul server/API/client pools.
+1. **Package Terraform** – upload the policies, base, and cluster stacks to OCI Resource Manager.
+2. **Apply Terraform** – apply IAM policies first, then base, then cluster; this guarantees the bastion has permissions to launch the Packer builder and create custom images.
 3. **Build Binaries & Stage Runtime Assets** – build binaries on instances and stage kernels and configuration.
 4. **Register Nomad Jobs** – launch the orchestrator, API, client-proxy, and template-manager.
 5. **Initialize PostgreSQL** – load schema and seeds required for the API to authorize requests.
 6. **Smoke Test the API** – confirm health endpoints and a template flow from your workstation.
+7. **Optional: Seed OCIR** – if you need to push a seed image manually; requires OCIR username/password only for that seeding step (runtime uses Instance Principal).
 
 The sections below expand each step in detail.
 
@@ -43,6 +45,8 @@ The sections below expand each step in detail.
 - OCI command-line configured locally **or** access to the bastion host created by `terraform-base`.
 - Go 1.21+ installed on API and Client pool instances (installed automatically by `deploy-poc.sh`).
 - Ability to reach the upstream Firecracker release buckets (used by the provisioning script to fetch kernels and the `firecracker` binary).
+- OCIR pulls/pushes require a registry username + auth token. Set `OCIR_USERNAME` = `<namespace>/<username>` and `OCIR_PASSWORD` = an OCI Auth Token (User menu → Auth Tokens). These are used by template-manager/orchestrator to pull from/push to OCIR.
+- If the requested OCIR tag is missing, template-manager will bootstrap from a fallback base image (default `python:3.10-slim`, override with `OCIR_FALLBACK_BASE_IMAGE`) and push it under the target tag.
 
 ### Build Process
 
@@ -74,24 +78,38 @@ Modify the version constants at the top of `deploy-poc.sh` if you need to pin di
 
 ## 1. Package Terraform Bundles
 
-From the repo root (`e2b-on-oci/`):
+From the repo root (`e2b-on-oci/`), run the helper script (defaults to `us-ashburn-1`):
 
 ```bash
-zip -r e2b-oci-stack.zip terraform-base
-zip -r e2b-oci-cluster.zip terraform-cluster
+./package_terraform_bundles.sh [region]
 ```
 
-These are the archives you will upload into OCI Resource Manager.
+Examples:
+- `./package_terraform_bundles.sh` → uses `us-ashburn-1`
+- `./package_terraform_bundles.sh ap-sydney-1`
 
-## 2. Apply Terraform (Base & Cluster)
+The script substitutes any `__REGION__` placeholders in Nomad jobs and bootstrap scripts before zipping. Region must be set in three places and should match:
+- Terraform stack input (`var.region` when applying stacks)
+- Packaging time for Nomad/user-data (`./package_terraform_bundles.sh [region]`)
+- Runtime env (`OCI_REGION` in `deploy.env` used by services)
 
-1. In OCI Resource Manager, create a Stack from `e2b-oci-stack.zip` and run `Apply` using the desired compartment, region, CIDRs, SSH key, etc.
-2. After the base stack completes, repeat the process with `e2b-oci-cluster.zip`. Capture the following before starting the cluster stack:
+It emits three bundles in the repo root:
+- `e2b-oci-policies.zip`
+- `e2b-oci-stack.zip`
+- `e2b-oci-cluster.zip`
+
+Apply them in the order listed above so the IAM/DG changes are active before the bastion user data runs Packer.
+
+## 2. Apply Terraform (Policies → Base → Cluster)
+
+1. In OCI Resource Manager, create a Stack from `e2b-oci-policies.zip` and run `Apply` in your home region. This bootstraps the dynamic group + policies needed for instance principal/Packer.
+2. After the policies stack finishes propagating, create and apply `e2b-oci-stack.zip` (base) using the desired compartment, region, CIDRs, SSH key, etc.
+3. After the base stack completes, apply `e2b-oci-cluster.zip`. Capture the following before starting the cluster stack:
    - `private_subnet_id`, `vcn_id`, and `vcn_cidr_block` (from the base stack outputs)
    - `custom_image_ocid`: open OCI Console → **Compute → Custom Images** under the same compartment and copy the latest `e2b-*` image OCID (each build is timestamped). You can also SSH to the bastion and run `cat /opt/e2b/custom_image_ocid.txt`.
    - SSH public key you want injected into the cluster instances
    - Any tag/compartment overrides you plan to reuse
-3. Collect the IPs you need for SSH (bastion public IP, server/API/client pool private IPs, etc.) from the OCI Console → Compute → Instances in the target compartment, then copy them into `deploy.env`.
+4. Collect the IPs you need for SSH (bastion public IP, server/API/client pool private IPs, etc.) from the OCI Console → Compute → Instances in the target compartment, then copy them into `deploy.env`.
 
 ## 3. Stage Artifacts & Runtime Assets
 
@@ -108,6 +126,7 @@ All steps below run from your workstation inside `e2b-on-oci/`.
    - `BASTION_HOST`, `SERVER_POOL_*`, `API_POOL_*`, `CLIENT_POOL_*`: open the OCI Console → **Compute → Instances**, select the compartment you targeted with Terraform, and copy each instance’s public/private IP from the table.
    - `POSTGRES_HOST`: OCI Console → **Oracle Database → PostgreSQL**, select the DB system created by `terraform-base`, and copy its hostname (format `primary.<hash>.postgresql.<region>.oci.oraclecloud.com`).
    - Redis settings are optional—the client-proxy uses an in-memory catalog in this POC, so you can leave `REDIS_ENDPOINT` unset unless you explicitly point at the managed Redis cluster.
+   - **Object Storage & OCIR (required at runtime):** `OCI_REGION`, `OCI_NAMESPACE`, `TEMPLATE_BUCKET_NAME`, `OCI_CONTAINER_REPOSITORY_NAME` (use outputs from `terraform-base` for namespace/repo, and the chosen template bucket). Set `OCIR_USERNAME`/`OCIR_PASSWORD` (auth token) so services can pull from OCIR.
 3. `deploy-poc.sh` and `deploy-services.sh` automatically source `deploy.env`, so once the file is filled out you can run the scripts without additional prompts.
 
 1. Ensure you can reach the bastion via SSH:
@@ -234,6 +253,10 @@ With Nomad jobs running and the database initialized, the API is immediately rea
 
    Template-manager logs on the client pool (`nomad alloc logs -stderr <alloc> template-manager`) should show the build progressing to completion.
 
+   **Optional: push seed image to OCIR.** If you want `seed-template-image.sh` to push to OCIR (instead of local-only), set:
+   - `OCIR_TEMPLATE_REPOSITORY_PATH="<region>.ocir.io/<namespace>/<repo>"` (aligns with `OCI_REGION`/`OCI_NAMESPACE`/`OCI_CONTAINER_REPOSITORY_NAME`)
+   - `OCIR_USERNAME`, `OCIR_PASSWORD` (OCI registry username + Auth Token; create under User Settings → Auth Tokens). The script does not mint a token via Instance Principal.
+
    **Note:** The `validate-api.sh` script automatically handles template building and seeding, so manual use of `seed-template-image.sh` is only needed for custom template builds outside of validation.
 
 4. **Expose the API publicly (optional)** by creating an SSH tunnel:
@@ -293,7 +316,7 @@ With the template cached and the catalog populated, run a full sandbox round-tri
 
 These steps prove CRUD + execution parity with the AWS flow.
 
-> **Snapshot storage:** Every template build leaves its artifacts (rootfs, snapshots, Firecracker metadata) on the client pool under `/var/e2b/templates/<template-id>/...`. Subsequent sandbox creates pull directly from those local assets, so there is no need to rebuild unless you change the template.
+> **Snapshot/storage:** Template artifacts are stored in OCI Object Storage (`TEMPLATE_BUCKET_NAME`) and images in OCIR; local copies may exist on the client for runtime. Ensure envs are set for `STORAGE_PROVIDER=OCIBucket`, `ARTIFACTS_REGISTRY_PROVIDER=OCI_OCIR`, and `OCIR_USERNAME`/`OCIR_PASSWORD` (auth token).
 
 ## 8. Validation
 
@@ -369,5 +392,5 @@ At this point the snapshot can be served back through the standard resume path (
 
 - Both Nomad and Consul run as `root` on the instances. The bootstrap scripts installed via Terraform (`run-nomad.sh`, `run-nomad-client.sh`) handle this automatically.
 - Consul/Nomad ACLs remain disabled in this POC build; the scripts and job specs assume open access.
-- The template-manager and orchestrator jobs are configured for local template storage (`/var/e2b/templates`) and use the Local artifacts registry driver.
+- The template-manager and orchestrator jobs are configured for OCI storage/registry (`STORAGE_PROVIDER=OCIBucket`, `ARTIFACTS_REGISTRY_PROVIDER=OCI_OCIR`).
 - Observability (OTEL collector, Loki) is not deployed in this milestone; log warnings about `127.0.0.1:4317` can be ignored.

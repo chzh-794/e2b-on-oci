@@ -105,6 +105,11 @@ func (g *AWSArtifactsRegistry) GetImage(ctx context.Context, templateId string, 
 	return img, nil
 }
 
+func (g *AWSArtifactsRegistry) EnsureImage(ctx context.Context, templateId string, buildId string, platform containerregistry.Platform) (containerregistry.Image, error) {
+	// AWS path relies on images being present; no auto-bootstrap here.
+	return g.GetImage(ctx, templateId, buildId, platform)
+}
+
 func (g *AWSArtifactsRegistry) getAuthToken(ctx context.Context) (*authn.Basic, error) {
 	res, err := g.client.GetAuthorizationToken(ctx, &ecr.GetAuthorizationTokenInput{})
 	if err != nil {

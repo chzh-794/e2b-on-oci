@@ -125,6 +125,12 @@ variable "enable_object_storage" {
   default     = true
 }
 
+variable "enable_ocir" {
+  type        = bool
+  description = "Whether to create an OCIR container repository"
+  default     = true
+}
+
 variable "enable_postgresql" {
   type        = bool
   description = "Whether to create the managed PostgreSQL database"
@@ -171,6 +177,12 @@ variable "postgresql_admin_password" {
   type        = string
   description = "Hard-coded admin password for the PostgreSQL database (POC only; replace with OCI Vault in production)"
   default     = "E2bP0cPostgres!2025"
+}
+
+variable "ocir_repository_display_name" {
+  type        = string
+  description = "Display name for the OCIR repository that stores template images"
+  default     = "e2b-templates"
 }
 
 variable "redis_node_count" {

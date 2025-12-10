@@ -44,7 +44,6 @@ require (
 
 require (
 	ariga.io/atlas v0.15.0 // indirect
-	dario.cat/mergo v1.0.1 // indirect
 	entgo.io/ent v0.12.5 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.14.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.7.0 // indirect
@@ -59,7 +58,6 @@ require (
 	github.com/OneOfOne/xxhash v1.2.8 // indirect
 	github.com/Workiva/go-datastructures v1.1.0 // indirect
 	github.com/agext/levenshtein v1.2.3 // indirect
-	github.com/air-verse/air v1.61.7 // indirect
 	github.com/alecthomas/units v0.0.0-20211218093645-b94a6e3cc137 // indirect
 	github.com/andybalholm/brotli v1.1.1 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
@@ -68,8 +66,6 @@ require (
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
 	github.com/aws/aws-sdk-go v1.55.7 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/bep/godartsass/v2 v2.3.2 // indirect
-	github.com/bep/golibsass v1.2.0 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
 	github.com/bytedance/sonic v1.13.2 // indirect
 	github.com/bytedance/sonic/loader v0.2.4 // indirect
@@ -77,15 +73,12 @@ require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/cli/safeexec v1.0.1 // indirect
 	github.com/cloudwego/base64x v0.1.5 // indirect
 	github.com/coreos/go-semver v0.3.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
-	github.com/creack/pty v1.1.23 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dennwc/varint v1.0.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-	github.com/dprotaso/go-yit v0.0.0-20220510233725-9ba8df137936 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/edsrzf/mmap-go v1.2.0 // indirect
 	github.com/facette/natsort v0.0.0-20181210072756-2cd4dd1e2dcb // indirect
@@ -105,10 +98,8 @@ require (
 	github.com/go-openapi/spec v0.21.0 // indirect
 	github.com/go-openapi/strfmt v0.23.0 // indirect
 	github.com/go-openapi/validate v0.24.0 // indirect
-	github.com/gobwas/glob v0.2.3 // indirect
 	github.com/gogo/googleapis v1.4.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/gohugoio/hugo v0.139.4 // indirect
 	github.com/golang-migrate/migrate/v4 v4.18.2 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/btree v1.1.3 // indirect
@@ -150,7 +141,6 @@ require (
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/mwitkow/go-conntrack v0.0.0-20190716064945-2f068394615f // indirect
-	github.com/oapi-codegen/oapi-codegen/v2 v2.4.1 // indirect
 	github.com/oasdiff/yaml v0.0.0-20250309154309-f31be36b4037 // indirect
 	github.com/oasdiff/yaml3 v0.0.0-20250309153720-d2182401db90 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
@@ -159,7 +149,6 @@ require (
 	github.com/opentracing-contrib/go-stdlib v1.0.0 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
 	github.com/paulmach/orb v0.11.1 // indirect
-	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/perimeterx/marshmallow v1.1.5 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
@@ -180,18 +169,14 @@ require (
 	github.com/soheilhy/cmux v0.1.5 // indirect
 	github.com/sony/gobreaker v0.5.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
-	github.com/speakeasy-api/openapi-overlay v0.9.0 // indirect
-	github.com/spf13/afero v1.11.0 // indirect
 	github.com/spf13/cast v1.8.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
-	github.com/tdewolff/parse/v2 v2.7.15 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/uber/jaeger-client-go v2.30.0+incompatible // indirect
 	github.com/uber/jaeger-lib v2.4.1+incompatible // indirect
 	github.com/vmihailenco/go-tinylfu v0.2.2 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.3.5 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
-	github.com/vmware-labs/yaml-jsonpath v0.3.2 // indirect
 	github.com/willf/bitset v1.1.11 // indirect
 	github.com/willf/bloom v2.0.3+incompatible // indirect
 	github.com/zclconf/go-cty v1.14.1 // indirect
@@ -289,8 +274,3 @@ replace github.com/prometheus/prometheus => github.com/prometheus/prometheus v0.
 
 // https://github.com/grafana/loki/issues/2826
 replace github.com/grafana/loki/pkg/push => github.com/grafana/loki/pkg/push v0.0.0-20231124145642-d62d4e37d1f3
-
-tool (
-	github.com/air-verse/air
-	github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
-)

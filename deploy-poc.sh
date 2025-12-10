@@ -41,6 +41,10 @@ REQUIRED_VARS=(
   API_POOL_PUBLIC
   CLIENT_POOL_PUBLIC
   POSTGRES_HOST
+  OCI_REGION
+  OCI_NAMESPACE
+  TEMPLATE_BUCKET_NAME
+  OCI_CONTAINER_REPOSITORY_NAME
 )
 MISSING_VARS=()
 for var in "${REQUIRED_VARS[@]}"; do
@@ -507,8 +511,8 @@ echo "✓ PostgreSQL client installed: $(psql --version | head -n1)"
 # Install Go
 if ! command -v go &> /dev/null; then
     cd /tmp
-    wget -q https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
-    sudo tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
+    wget -q https://go.dev/dl/go1.24.3.linux-amd64.tar.gz
+    sudo tar -C /usr/local -xzf go1.24.3.linux-amd64.tar.gz
     echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
     echo "✓ Go installed"
 else
@@ -533,12 +537,22 @@ sudo systemctl restart docker || sudo systemctl start docker
 # Install Go
 if ! command -v go &> /dev/null; then
     cd /tmp
-    wget -q https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
-    sudo tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
+    wget -q https://go.dev/dl/go1.24.3.linux-amd64.tar.gz
+    sudo tar -C /usr/local -xzf go1.24.3.linux-amd64.tar.gz
     echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
     echo "✓ Go installed"
 else
     echo "✓ Go already installed"
+fi
+
+# Install OCI CLI (needed for env uploads via upload-envs.sh)
+if ! command -v oci >/dev/null 2>&1; then
+    sudo DEBIAN_FRONTEND=noninteractive apt install -y python3-pip
+    sudo python3 -m pip install --upgrade pip >/dev/null 2>&1 || true
+    sudo python3 -m pip install --upgrade oci-cli
+    echo "✓ OCI CLI installed"
+else
+    echo "✓ OCI CLI already installed"
 fi
 
 # Mount /run/netns as shared for named network namespace support
@@ -826,9 +840,15 @@ cat <<EOF | ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_TARGET} 'cat > ~/e2b/api.env'
 # PostgreSQL Configuration (OCI Database)
 POSTGRES_CONNECTION_STRING=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=require
 
-# Storage Configuration (Local for POC)
-STORAGE_PROVIDER=Local
-LOCAL_TEMPLATE_STORAGE_BASE_PATH=/var/e2b/templates
+# Storage Configuration (OCI)
+STORAGE_PROVIDER=OCIBucket
+TEMPLATE_BUCKET_NAME=${TEMPLATE_BUCKET_NAME}
+OCI_REGION=${OCI_REGION}
+OCI_NAMESPACE=${OCI_NAMESPACE}
+ARTIFACTS_REGISTRY_PROVIDER=OCI_OCIR
+OCI_CONTAINER_REPOSITORY_NAME=${OCI_CONTAINER_REPOSITORY_NAME}
+ARTIFACTS_REGISTRY_PROVIDER=OCI_OCIR
+OCI_CONTAINER_REPOSITORY_NAME=${OCI_CONTAINER_REPOSITORY_NAME}
 
 # Redis Configuration (optional single-node fallback)
 # Leave empty to rely on the in-memory sandbox catalog.
@@ -894,9 +914,11 @@ ssh "${SSH_OPTS[@]}" ${SSH_USER}@${API_TARGET} 'echo "✓ Client Proxy configura
 
 echo -e "\n${YELLOW}Creating Orchestrator configuration...${NC}"
 cat <<EOF | ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'cat > ~/e2b/orchestrator.env'
-# Storage Configuration (Local for POC)
-STORAGE_PROVIDER=Local
-LOCAL_TEMPLATE_STORAGE_BASE_PATH=/var/e2b/templates
+# Storage Configuration (OCI)
+STORAGE_PROVIDER=OCIBucket
+TEMPLATE_BUCKET_NAME=${TEMPLATE_BUCKET_NAME}
+OCI_REGION=${OCI_REGION}
+OCI_NAMESPACE=${OCI_NAMESPACE}
 
 # Firecracker Configuration
 FIRECRACKER_BIN_PATH=/usr/local/bin/firecracker
@@ -928,14 +950,25 @@ EOF
 ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'echo "✓ Orchestrator configuration created"'
 
 echo -e "\n${YELLOW}Creating Template Manager configuration...${NC}"
-cat <<EOF | ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'cat > ~/e2b/template-manager.env'
-# Storage Configuration (Local for POC)
-STORAGE_PROVIDER=Local
-LOCAL_TEMPLATE_STORAGE_BASE_PATH=/var/e2b/templates
-TEMPLATE_BUCKET_NAME=local
 
-# Artifacts Registry Configuration (Local for POC)
-ARTIFACTS_REGISTRY_PROVIDER=Local
+# Safely quote OCIR credentials for the remote env file
+TM_OCIR_USERNAME=$(printf '%q' "${OCIR_USERNAME}")
+TM_OCIR_PASSWORD=$(printf '%q' "${OCIR_PASSWORD}")
+ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} <<EOF
+set -e
+cat > ~/e2b/template-manager.env <<ENV
+# Storage Configuration (OCI)
+STORAGE_PROVIDER=OCIBucket
+TEMPLATE_BUCKET_NAME=${TEMPLATE_BUCKET_NAME}
+OCI_REGION=${OCI_REGION}
+OCI_NAMESPACE=${OCI_NAMESPACE}
+
+# Artifacts Registry Configuration (OCIR)
+ARTIFACTS_REGISTRY_PROVIDER=OCI_OCIR
+OCI_CONTAINER_REPOSITORY_NAME=${OCI_CONTAINER_REPOSITORY_NAME}
+OCIR_USERNAME=${TM_OCIR_USERNAME}
+OCIR_PASSWORD=${TM_OCIR_PASSWORD}
+OCIR_FALLBACK_BASE_IMAGE=${OCIR_FALLBACK_BASE_IMAGE:-python:3.10-slim}
 
 # Firecracker Configuration
 FIRECRACKER_BIN_PATH=/usr/local/bin/firecracker
@@ -963,7 +996,7 @@ CONSUL_URL=http://localhost:8500
 SERVICE_DISCOVERY_ORCHESTRATOR_PROVIDER=DNS
 SERVICE_DISCOVERY_ORCHESTRATOR_DNS_RESOLVER_ADDRESS=127.0.0.1:8600
 SERVICE_DISCOVERY_ORCHESTRATOR_DNS_QUERY=orchestrator.service.consul
-
+ENV
 EOF
 ssh "${SSH_OPTS[@]}" ${SSH_USER}@${CLIENT_TARGET} 'echo "✓ Template Manager configuration created"'
 
@@ -1057,5 +1090,3 @@ echo "    Password: ${POSTGRES_PASSWORD}"
 echo ""
 echo "  Redis: ${REDIS_ENDPOINT}:${REDIS_PORT}"
 echo ""
-
-
