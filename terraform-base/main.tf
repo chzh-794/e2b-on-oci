@@ -534,6 +534,7 @@ resource "oci_core_instance" "bastion" {
       UBUNTU_IMAGE_OCID  = local.ubuntu_image_id
       ARCH               = local.is_arm_shape ? "aarch64" : "x86_64"
       HASH_ARCH          = local.is_arm_shape ? "arm64" : "amd64"
+      attempt            = 0
     }))
   }
   
@@ -565,6 +566,28 @@ resource "oci_artifacts_container_repository" "template_registry" {
   display_name   = var.ocir_repository_display_name
   is_public      = false
   is_immutable   = false
+}
+
+# ===================================================================================================
+# CONTAINER REGISTRY (OCIR)
+# ===================================================================================================
+
+data "oci_objectstorage_namespace" "ocir" {
+  compartment_id = var.compartment_ocid
+}
+
+resource "oci_artifacts_container_repository" "template_registry" {
+  count          = var.enable_ocir ? 1 : 0
+  compartment_id = var.compartment_ocid
+  display_name   = "${var.prefix}-templates"  # you can also hardcode "e2b-templates" if you want it stable
+  is_public      = false
+  is_immutable   = false
+
+  # Optional but nice to have
+  freeform_tags = {
+    "app"         = "e2b"
+    "environment" = var.environment
+  }
 }
 
 # ===================================================================================================
